@@ -163,6 +163,30 @@ export default function App() {
     // eslint-disable-next-line
   }, []);
 
+  // Флешки и внешние диски подключают прямо во время работы — список томов
+  // надо перечитывать. Опрос раз в 3 секунды дешёвый (read_dir + statvfs),
+  // а без него новый том появляется только после перезапуска приложения.
+  useEffect(() => {
+    let alive = true;
+    const sync = async () => {
+      try {
+        const next = await invoke<DiskInfo[]>("disk_info");
+        if (!alive) return;
+        setDisks((prev) => {
+          const key = (x: DiskInfo[]) => x.map((d) => `${d.mount}:${d.total}`).join("|");
+          return key(prev) === key(next) ? prev : next;
+        });
+      } catch {
+        /* диск могли отключить в момент чтения — повторим на следующем тике */
+      }
+    };
+    const timer = window.setInterval(sync, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   useEffect(() => {
     if (listing) load(listing.path, false);
     // eslint-disable-next-line

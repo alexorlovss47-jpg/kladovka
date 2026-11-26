@@ -192,28 +192,67 @@ fn simple_disk(path: &str) -> Option<DiskInfo> {
 #[tauri::command]
 async fn disk_info() -> Vec<DiskInfo> {
     tokio::task::spawn_blocking(|| {
-        let mut out = Vec::new();
+        let mut internal: Vec<DiskInfo> = Vec::new();
+        let mut external: Vec<DiskInfo> = Vec::new();
+
         if let Some(mut root) = simple_disk("/") {
             root.label = "Macintosh HD".into();
             root.ico = "🖥".into();
-            out.push(root);
+            internal.push(root);
         }
+
         if let Ok(rd) = fs::read_dir("/Volumes") {
             for item in rd.flatten() {
                 let p = item.path();
                 let s = p.to_string_lossy().to_string();
-                if s.ends_with("Macintosh HD") {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| s.clone());
+
+                // Macintosh HD — это уже добавленный корень
+                if name == "Macintosh HD" {
                     continue;
                 }
+                // Recovery — системный том восстановления, не пользовательский
+                if name == "Recovery" {
+                    continue;
+                }
+                // Метаданные APFS-контейнера (Preboot, VM, Update, Data и т.п.)
+                const SYSTEM_TOMES: [&str; 6] =
+                    ["Preboot", "VM", "Update", "Data", "BaseSystem", "com.apple.TimeMachine"];
+                if SYSTEM_TOMES.contains(&name.as_str()) {
+                    continue;
+                }
+
                 if let Some(mut d) = simple_disk(&s) {
-                    d.label = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(s.clone());
+                    // statvfs на APFS/Big Sur+ томах, которые лежат в одном
+                    // контейнере с корнем, возвращает объём всего контейнера.
+                    // Если том отдаёт ровно те же цифры, что и "/", это не
+                    // отдельный диск — не показываем его второй раз.
+                    let fake_root = internal
+                        .first()
+                        .map(|r| r.total == d.total && r.available == d.available)
+                        .unwrap_or(false);
+                    if fake_root {
+                        continue;
+                    }
+
+                    d.label = name;
                     d.removable = true;
                     d.ico = "💾".into();
-                    out.push(d);
+                    external.push(d);
                 }
             }
         }
-        out
+
+        // Отдельные устройства — первыми, по объёму; мелкие образы (Pake и пр.) внизу.
+        // read_dir отдаёт произвольный порядок, поэтому сортировка обязательна:
+        // иначе свежевставленная флешка уезжает за нижний край сайдбара.
+        external.sort_by(|a, b| b.total.cmp(&a.total));
+
+        internal.extend(external);
+        internal
     })
     .await
     .unwrap_or_default()
