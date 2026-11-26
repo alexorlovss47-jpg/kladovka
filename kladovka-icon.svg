@@ -1,0 +1,83 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1b2130"/>
+      <stop offset="100%" stop-color="#0c0f15"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#cfd6e2"/>
+      <stop offset="100%" stop-color="#9aa5b8"/>
+    </linearGradient>
+    <linearGradient id="box" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4fa8f5"/>
+      <stop offset="100%" stop-color="#2569d6"/>
+    </linearGradient>
+    <linearGradient id="boxrim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7cc4ff"/>
+      <stop offset="100%" stop-color="#3d8ce8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+
+  <!-- ears -->
+  <circle cx="392" cy="318" r="78" fill="url(#fur)"/>
+  <circle cx="632" cy="318" r="78" fill="url(#fur)"/>
+  <circle cx="392" cy="322" r="44" fill="#2a2f3a"/>
+  <circle cx="632" cy="322" r="44" fill="#2a2f3a"/>
+
+  <!-- head -->
+  <circle cx="512" cy="452" r="196" fill="url(#fur)"/>
+
+  <!-- raccoon mask across the eyes -->
+  <path d="M300 430 q212 -80 424 0 q28 96 -40 118 q-172 44 -344 0 q-68 -22 -40 -118 z"
+        fill="#2a2f3a"/>
+
+  <!-- eyes: wide, a bit guilty -->
+  <ellipse cx="428" cy="452" rx="52" ry="58" fill="#ffffff"/>
+  <ellipse cx="596" cy="452" rx="52" ry="58" fill="#ffffff"/>
+  <circle cx="440" cy="462" r="26" fill="#12161d"/>
+  <circle cx="584" cy="462" r="26" fill="#12161d"/>
+  <circle cx="450" cy="450" r="9" fill="#ffffff"/>
+  <circle cx="594" cy="450" r="9" fill="#ffffff"/>
+
+  <!-- white muzzle -->
+  <ellipse cx="512" cy="556" rx="118" ry="82" fill="#f4f7fb"/>
+
+  <!-- nose -->
+  <path d="M512 512 q34 0 34 30 q0 26 -34 30 q-34 -4 -34 -30 q0 -30 34 -30 z" fill="#1a1f28"/>
+
+  <!-- grin -->
+  <path d="M462 592 q50 44 100 0" fill="none" stroke="#1a1f28" stroke-width="12" stroke-linecap="round"/>
+  <!-- little tongue -->
+  <path d="M492 606 q20 30 40 0 z" fill="#ff7a8a"/>
+
+  <!-- whiskers -->
+  <path d="M362 566 l-72 -18 M362 596 l-76 10" stroke="#7e8798" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <path d="M662 566 l72 -18 M662 596 l76 10" stroke="#7e8798" stroke-width="8" stroke-linecap="round" fill="none"/>
+
+  <!-- crate: back rim -->
+  <rect x="176" y="648" width="672" height="64" rx="20" fill="url(#boxrim)"/>
+  <!-- crate: body -->
+  <path d="M196 700 h632 l-40 216 a40 40 0 0 1 -40 34 h-472 a40 40 0 0 1 -40 -34 z" fill="url(#box)"/>
+
+  <!-- crate slats -->
+  <path d="M262 760 h500 M276 830 h472" stroke="#0f4b9e" stroke-opacity="0.45" stroke-width="16" stroke-linecap="round"/>
+
+  <!-- paws gripping the rim -->
+  <g fill="url(#fur)">
+    <rect x="286" y="612" width="118" height="86" rx="42"/>
+    <rect x="620" y="612" width="118" height="86" rx="42"/>
+  </g>
+  <g stroke="#8d97a8" stroke-width="7" stroke-linecap="round">
+    <path d="M312 660 v26 M344 660 v26 M376 660 v26"/>
+    <path d="M646 660 v26 M678 660 v26 M710 660 v26"/>
+  </g>
+
+  <!-- a stolen file poking out -->
+  <g transform="translate(700 596) rotate(14)">
+    <rect width="120" height="150" rx="14" fill="#f4f7fb"/>
+    <path d="M0 34 h120" stroke="#c3ccda" stroke-width="8"/>
+    <path d="M22 70 h76 M22 98 h76 M22 126 h48" stroke="#c3ccda" stroke-width="10" stroke-linecap="round"/>
+  </g>
+</svg>
