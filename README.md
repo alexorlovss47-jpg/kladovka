@@ -69,6 +69,18 @@ pnpm install
 pnpm tauri build        # → src-tauri/target/release/bundle/dmg/
 ```
 
+To release a new version:
+
+```bash
+# 1. bump "version" in package.json, src-tauri/Cargo.toml, src-tauri/tauri.conf.json
+# 2. commit and push
+git tag v0.1.2 && git push origin v0.1.2
+```
+
+Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds on an Apple Silicon runner, re-signs the bundle and publishes the DMG
+to GitHub Releases. It can also be run manually from the Actions tab.
+
 For development:
 
 ```bash
