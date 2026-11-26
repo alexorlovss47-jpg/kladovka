@@ -9,6 +9,16 @@ Finder gets in the way: no progress percentages for multi-file copies, no disk
 panel, no cancel in the middle of an operation, no real keyboard workflow.
 Kladovka does exactly that — and nothing it doesn't need.
 
+## Screenshots
+
+**Dark:**
+
+![Kladovka dark theme](docs/screenshots/dark.png)
+
+**Light (follows the system, overridable in Settings):**
+
+![Kladovka light theme](docs/screenshots/light.png)
+
 ## Features
 
 - **Disk sidebar** — all volumes (incl. external drives in `/Volumes`) with usage bars, free/total via `statvfs`
@@ -17,10 +27,12 @@ Kladovka does exactly that — and nothing it doesn't need.
 - **Safe delete** — everything goes to the **macOS Trash** (recoverable), hard delete is an explicit choice
 - **Create files** — txt, md, json, csv, py, rs, sh, html + **valid empty .docx / .xlsx** (real Office skeletons, not zero-byte files)
 - **Search** — recursive name search with depth/count limits, non-blocking
-- **Navigation** — breadcrumb path bar, back/forward history, case-insensitive sort (folders first), symlink resolution
+- **Navigation** — breadcrumb path bar, back/forward history, symlink resolution
+- **Sortable columns** — click Name / Size / Modified to sort, click again to reverse (folders always first, natural order: `file2` before `file10`)
 - **Keyboard-first** — `↑↓` navigate, `Enter` open, `⌘C/⌘X/⌘V` clipboard, `F2` rename, `A` select all, `⌫` back
 - **Context menu** — right-click for open / rename / copy / move / trash
 - **Drag & drop** — drop files from Finder into Kladovka to copy them in
+- **Light & dark theme** — follows the system, with a manual override in Settings
 - **i18n** — Russian / English with auto-detection (⚙ in the toolbar)
 
 ## Tech
