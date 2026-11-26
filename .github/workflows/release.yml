@@ -26,8 +26,9 @@ permissions:
 jobs:
   build:
     name: build (macOS arm64)
-    # macos-14 и новее — это Apple Silicon. macos-13 был бы Intel x86_64.
-    runs-on: macos-14
+    # macos-latest сейчас указывает на образ macos-26-arm64 (Apple Silicon).
+    # Явные macos-14/13 на этом аккаунте не выделяются — проверено прогоном.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
 
