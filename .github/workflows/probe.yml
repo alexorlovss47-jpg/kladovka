@@ -1,0 +1,11 @@
+name: probe
+on: workflow_dispatch
+jobs:
+  t:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15, macos-14, ubuntu-latest]
+    steps:
+      - run: uname -a && echo "ARCH=$(uname -m)"
