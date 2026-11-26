@@ -49,6 +49,17 @@ Rust commands: `list_dir`, `copy_paths`, `move_paths`, `trash_paths`,
 `delete_paths`, `rename_path`, `create_dir`, `create_file`, `search_tree`,
 `disk_info`, `cancel_op`, `open_path`, `reveal_path`.
 
+## Install
+
+Grab the latest **DMG** from [Releases](https://github.com/alexorlovss47-jpg/kladovka/releases/latest),
+open it and drag Kladovka into Applications.
+
+Requires macOS 10.13+ on Apple Silicon (arm64).
+
+> The build is ad-hoc signed, not notarized by Apple. On first launch macOS will
+> block it — right-click the app → **Open** → **Open**, or run
+> `xattr -dr com.apple.quarantine /Applications/Kladovka.app`.
+
 ## Build from source
 
 Requirements: macOS, [Rust](https://rustup.rs), [pnpm](https://pnpm.io).

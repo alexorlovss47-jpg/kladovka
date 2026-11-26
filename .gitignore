@@ -26,5 +26,9 @@ dist-ssr
 # Rust
 src-tauri/target
 
+# Build artifacts
+*.dmg
+*.app
+
 # macOS
 .DS_Store
