@@ -1,0 +1,103 @@
+name: release
+
+# Собирает .app и DMG на Apple Silicon и публикует их в GitHub Release.
+#
+# Как выпустить новую версию:
+#   1. поднять version в package.json, src-tauri/Cargo.toml, src-tauri/tauri.conf.json
+#   2. git commit && git push
+#   3. git tag v0.1.2 && git push origin v0.1.2
+#
+# Дальше всё делает CI. Повторный запуск на том же теге перезаливает ассеты.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # ручной запуск из вкладки Actions (тег берётся из поля выше)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег для сборки (например v0.1.2)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (macOS arm64)
+    # macos-14 и новее — это Apple Silicon. macos-13 был бы Intel x86_64.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      # Кеш cargo: без него каждый релиз компилирует ~250 крейтов с нуля.
+      - name: cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # При push по тегу — имя тега. При ручном запуске — введённое поле.
+          tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          releaseName: "Kladovka ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          releaseDraft: false
+          prerelease: false
+          # Без подписи Developer ID: ad-hoc подпись ставит сам tauri.
+          args: --target aarch64-apple-darwin
+
+      # Шаг подписи: tauri кладёт ad-hoc подпись с пустыми ресурсами,
+      # из-за чего Gatekeeper ругается «code has no resources». Пересобираем
+      # DMG уже из правильно подписанного бандла и перезаливаем ассет.
+      - name: Re-sign and rebuild DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Kladovka.app"
+          test -d "$APP"
+
+          codesign --force --deep --sign - --timestamp=none "$APP"
+          codesign --verify --deep --strict "$APP"
+
+          STAGE="$(mktemp -d)"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+
+          # Имя совпадает с тем, что залил tauri-action, поэтому --clobber
+          # заменяет неподписанный DMG подписанным.
+          OUT="$RUNNER_TEMP/Kladovka_${TAG#v}_aarch64.dmg"
+          hdiutil create -volname Kladovka -srcfolder "$STAGE" -ov -format UDZO "$OUT"
+
+          gh release upload "$TAG" "$OUT" --clobber
