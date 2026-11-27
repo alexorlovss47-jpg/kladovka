@@ -22,6 +22,7 @@ Kladovka does exactly that — and nothing it doesn't need.
 ## Features
 
 - **Disk sidebar** — all volumes (incl. external drives in `/Volumes`) with usage bars, free/total via `statvfs`
+- **Clean listings** — macOS `._*` metadata companions, `System Volume Information`, `$RECYCLE.BIN`, `desktop.ini` and `Thumbs.db` are hidden (toggle *show hidden* to see them)
 - **Real progress** — byte-level progress events for copy/move with a **Cancel** button per operation
 - **Batch operations** — copy / move / rename / delete any selection in one action
 - **Safe delete** — everything goes to the **macOS Trash** (recoverable), hard delete is an explicit choice

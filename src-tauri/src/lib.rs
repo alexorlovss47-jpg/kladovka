@@ -87,8 +87,23 @@ fn entry_from(path: &Path, meta_is_dir: bool) -> Option<Entry> {
         size,
         modified,
         extension,
-        is_hidden: name.starts_with('.'),
+        is_hidden: name.starts_with('.') || is_mac_metadata_name(&name),
     })
+}
+
+/// Служебные файлы macOS/ntfs-3g, которые нельзя показывать пользователю.
+///
+/// ntfs-3g хранит xattrs macOS как NTFS alternate data streams и рядом с каждым
+/// файлом создаёт «спутник» `._name`. На NTFS они видны как обычные файлы, в
+/// Finder скрыты флагом. Показывать их бессмысленно: это метаданные, а не данные.
+///
+/// Также отсекаем мусор от Windows и архиваторов.
+fn is_mac_metadata_name(name: &str) -> bool {
+    name.starts_with("._")            // xattr-спутники (ntfs-3g, tar, ditto)
+        || name == "System Volume Information"
+        || name == "$RECYCLE.BIN"
+        || name == "desktop.ini"
+        || name == "Thumbs.db"
 }
 
 fn expand(path: &str) -> PathBuf {
