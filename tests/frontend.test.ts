@@ -341,3 +341,52 @@ test("запись без даты не проходит фильтр по пе�
   const list = [mkE("nodate.txt", { modified: null })];
   assert.equal(applyQuickFilter(list, { ...DEFAULT_QUICK, period: "year" }, NOW).length, 0);
 });
+
+// ---------- дополнительные возможности (этап 6) ----------
+
+test("новые ключи дополнительных действий есть в обоих языках", () => {
+  const keys = [
+    "extraMenu", "extraArchive", "extraExtract", "extraRename", "extraCompare",
+    "extraFolderSize", "extraCopyPath", "archiveName", "archiveRun", "archiveHint",
+    "extractHint", "extractRun", "renamePattern", "renameStart", "renameFilterName",
+    "renameFilterExt", "renamePreview", "renameRun", "renameConflict", "renameSelected",
+    "compareLeft", "compareRight", "compareRun", "compareOnlyLeft", "compareOnlyRight",
+    "compareDifferent", "compareSame", "folderSizeTitle", "folderSizeFiles",
+    "folderSizeDirs", "folderSizeBytes", "copiedPath", "extraBusy", "actionExtras",
+  ] as const;
+  for (const k of keys) {
+    assert.ok(dict.ru[k], `ru.${k} отсутствует`);
+    assert.ok(dict.en[k], `en.${k} отсутствует`);
+  }
+});
+
+test("хоткей дополнительных действий не конфликтует", () => {
+  assert.equal(DEFAULT_KEYS.extras, "cmd+e");
+  const others = (Object.entries(DEFAULT_KEYS) as [ActionName, string][])
+    .filter(([a]) => a !== "extras")
+    .map(([, v]) => v);
+  assert.ok(!others.includes("cmd+e"), "cmd+e уже занят");
+});
+
+test("шаблон переименования: номер и старое имя", () => {
+  const apply = (pattern: string, name: string, ext: string | null, n: number) => {
+    const stem = name.replace(/\.[^.]+$/, "");
+    const out = pattern.replace("{n}", String(n)).replace("{name}", stem);
+    return ext ? `${out}.${ext}` : out;
+  };
+  assert.equal(apply("photo_{n}", "a.png", "png", 1), "photo_1.png");
+  assert.equal(apply("old_{name}", "a.png", "png", 1), "old_a.png");
+  assert.equal(apply("x{n}", "file", null, 0), "x0");
+  assert.equal(apply("{name}_{n}", "IMG_1.jpg", "jpg", 42), "IMG_1_42.jpg");
+});
+
+test("шаблон с несколькими вхождениями {n}", () => {
+  const out = "{n}-{n}".replaceAll("{n}", "5");
+  assert.equal(out, "5-5", "replaceAll заменяет все вхождения");
+});
+
+test("размеры форматируются для архива и папки", () => {
+  const fmt = fmtSizeWith(dict.ru);
+  assert.ok(fmt(2 * 1024 * 1024).includes(dict.ru.mb));
+  assert.ok(fmt(0).includes(dict.ru.b));
+});

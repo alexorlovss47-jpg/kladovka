@@ -110,7 +110,8 @@ export type ActionName =
   | "refresh"
   | "toggleHidden"
   | "togglePreview"
-  | "advancedSearch";
+  | "advancedSearch"
+  | "extras";
 
 /** Статус операции в очереди (зеркалит OpStatus из Rust). */
 export type OpStatus = "queued" | "running" | "paused" | "finished" | "failed" | "cancelled";
@@ -190,3 +191,28 @@ export type QuickFilter = {
   period: "all" | "day" | "week" | "month" | "year";
   kind: "all" | "files" | "dirs";
 };
+
+/** План пакетного переименования (зеркалит RenamePlan). */
+export type RenamePlan = { from: string; to: string; conflict: boolean };
+
+/** Разница двух каталогов. */
+export type DiffKind = "OnlyLeft" | "OnlyRight" | "Different" | "Same";
+export type DiffEntry = {
+  relative: string;
+  kind: DiffKind;
+  left_size: number | null;
+  right_size: number | null;
+};
+export type DirDiff = {
+  entries: DiffEntry[];
+  only_left: number;
+  only_right: number;
+  different: number;
+  same: number;
+};
+
+/** Размер каталога. */
+export type FolderSize = { bytes: number; files: number; dirs: number };
+
+/** Результат архивации. */
+export type ArchiveResult = { path: string; files: number; bytes: number };

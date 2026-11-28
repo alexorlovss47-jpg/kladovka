@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Runtime, State, WebviewUrl, WebviewWindowBuilder
 pub mod ops;
 pub mod preview;
 pub mod search;
+pub mod extras;
 
 pub use ops::{Job, OpInfo, OpStatus, OpsState, Signal, MAX_CONCURRENT};
 
@@ -881,6 +882,76 @@ async fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- дополнительные возможности (Этап 6) ----------
+
+#[tauri::command]
+async fn create_archive(sources: Vec<String>, destination: String) -> Result<extras::ArchiveResult, String> {
+    let srcs: Vec<PathBuf> = sources.iter().map(|s| expand(s)).collect();
+    let dest = expand(&destination);
+    tokio::task::spawn_blocking(move || extras::create_archive(&srcs, &dest, None))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn extract_archive(archive: String, destination: String) -> Result<usize, String> {
+    let a = expand(&archive);
+    let dest = expand(&destination);
+    tokio::task::spawn_blocking(move || extras::extract_archive(&a, &dest))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn sniff_archive(path: String) -> Result<Option<String>, String> {
+    let p = expand(&path);
+    tokio::task::spawn_blocking(move || extras::sniff_archive(&p).map(|s| s.to_string()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn plan_rename(
+    paths: Vec<String>,
+    pattern: String,
+    start: Option<usize>,
+    name_filter: Option<String>,
+    ext_filter: Option<String>,
+) -> Result<Vec<extras::RenamePlan>, String> {
+    let srcs: Vec<PathBuf> = paths.iter().map(|s| expand(s)).collect();
+    Ok(extras::plan_rename(
+        &srcs,
+        &pattern,
+        start.unwrap_or(1),
+        name_filter.as_deref(),
+        ext_filter.as_deref(),
+    ))
+}
+
+#[tauri::command]
+async fn apply_rename(plan: Vec<extras::RenamePlan>) -> Result<usize, String> {
+    tokio::task::spawn_blocking(move || extras::apply_rename_plan(&plan))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn compare_dirs(left: String, right: String) -> Result<extras::DirDiff, String> {
+    let l = expand(&left);
+    let r = expand(&right);
+    tokio::task::spawn_blocking(move || extras::compare_dirs(&l, &r))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn folder_size(path: String) -> Result<extras::FolderSize, String> {
+    let p = expand(&path);
+    tokio::task::spawn_blocking(move || extras::folder_size(&p))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 // ---------- поиск и фильтрация (Этап 5) ----------
 
 #[tauri::command]
@@ -1203,7 +1274,14 @@ pub fn run() {
             read_text_preview,
             advanced_search,
             largest_files,
-            find_duplicates
+            find_duplicates,
+            create_archive,
+            extract_archive,
+            sniff_archive,
+            plan_rename,
+            apply_rename,
+            compare_dirs,
+            folder_size
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

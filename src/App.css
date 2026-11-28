@@ -1777,3 +1777,18 @@ body,
   font-weight: 600;
   margin-bottom: 3px;
 }
+
+/* ---------- дополнительные действия (этап 6) ---------- */
+
+.extras-modal {
+  width: 640px;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.sd-conflict {
+  color: var(--danger);
+  font-size: 10.5px;
+  flex: none;
+}

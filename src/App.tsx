@@ -21,6 +21,7 @@ import { OperationsPanel } from "./components/OperationsPanel";
 import { ContextMenu, type MenuTarget } from "./components/ContextMenu";
 import { PreviewPane } from "./components/PreviewPane";
 import { SearchDialog } from "./components/SearchDialog";
+import { ExtrasDialog } from "./components/ExtrasDialog";
 import type {
   ActionName,
   ClipboardState,
@@ -60,6 +61,7 @@ export default function App() {
   const [dropActive, setDropActive] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [extrasOpen, setExtrasOpen] = useState(false);
   const [quickFilter, setQuickFilter] = useState<QuickFilter>(DEFAULT_QUICK);
   const [searchFilter, setSearchFilter] = useState<SearchFilter>({
     query: "",
@@ -248,6 +250,7 @@ export default function App() {
       toggleHidden: () => updatePrefs({ showHidden: !prefs.showHidden }),
       togglePreview: () => setPreviewOpen((v) => !v),
       advancedSearch: () => setSearchOpen(true),
+      extras: () => setExtrasOpen(true),
     }),
     [
       api,
@@ -561,6 +564,16 @@ export default function App() {
               api.go(activeId, dir);
             }}
             onClose={() => setSearchOpen(false)}
+          />
+        )}
+
+        {extrasOpen && activeTab?.listing && (
+          <ExtrasDialog
+            t={t}
+            root={activeTab.listing.path}
+            selection={[...activeSelection]}
+            onClose={() => setExtrasOpen(false)}
+            onRefresh={() => api.refreshAll()}
           />
         )}
 

@@ -38,6 +38,7 @@ export const DEFAULT_KEYS: KeyMap = {
   toggleHidden: "cmd+shift+h",
   togglePreview: "cmd+i",
   advancedSearch: "cmd+shift+f",
+  extras: "cmd+e",
 };
 
 /** Собрать строковое представление нажатия. */
