@@ -9,6 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { eventToCombo, prettyCombo, conflictOf, DEFAULT_KEYS } from "../src/hooks/useKeymap.ts";
 import { compareEntries, buildCrumbs, baseName, iconFor } from "../src/format.ts";
+import { fmtSizeWith } from "../src/format.ts";
 import { dict } from "../src/i18n.ts";
 import type { ActionName, Entry } from "../src/types.ts";
 
@@ -162,4 +163,47 @@ test("iconFor различает типы", () => {
   assert.equal(iconFor(mk("a.zip", { extension: "zip" })), "📦");
   assert.equal(iconFor(mk("a.rs", { extension: "rs" })), "📄");
   assert.equal(iconFor(mk("a.bin", { extension: "bin" })), "📃");
+});
+
+// ---------- предпросмотр (этап 4) ----------
+
+test("все новые ключи предпросмотра есть в обоих языках", () => {
+  const keys = [
+    "preview", "previewEmpty", "previewFolderHint", "kindImage", "kindPdf", "kindText",
+    "kindBinary", "kindDirectory", "kindSymlink", "kindOther", "pages", "pagesUnknown",
+    "tooLarge", "loadAnyway", "shown", "of", "noPreviewBinary", "infoKind", "infoSize",
+    "infoDimensions", "infoModified", "infoCreated", "infoLocation", "px",
+    "notApplicable", "togglePreview", "actionTogglePreview",
+  ] as const;
+  for (const k of keys) {
+    assert.ok(dict.ru[k], `ru.${k} отсутствует`);
+    assert.ok(dict.en[k], `en.${k} отсутствует`);
+  }
+});
+
+test("хоткей предпросмотра есть и не конфликтует", () => {
+  assert.equal(DEFAULT_KEYS.togglePreview, "cmd+i");
+  assert.equal(conflictOf(DEFAULT_KEYS, "togglePreview", "cmd+i"), null);
+  // И он не совпадает ни с одним другим действием.
+  const others = (Object.entries(DEFAULT_KEYS) as [ActionName, string][])
+    .filter(([a]) => a !== "togglePreview")
+    .map(([, v]) => v);
+  assert.ok(!others.includes("cmd+i"), "cmd+i занят другим действием");
+});
+
+test("размеры форматируются по единицам словаря", () => {
+  const fmt = fmtSizeWith(dict.ru);
+  assert.equal(fmt(null), "");
+  assert.ok(fmt(512).includes(dict.ru.b), "байты");
+  assert.ok(fmt(2048).includes(dict.ru.kb), "килобайты");
+  assert.ok(fmt(5 * 1024 * 1024).includes(dict.ru.mb), "мегабайты");
+});
+
+test("крупные размеры не дают NaN", () => {
+  const fmt = fmtSizeWith(dict.ru);
+  for (const n of [0, 1, 1023, 1024, 1048576, 1073741824, 5 * 1099511627776]) {
+    const out = fmt(n);
+    assert.ok(!out.includes("NaN"), `NaN на ${n}: ${out}`);
+    assert.ok(out.length > 0);
+  }
 });

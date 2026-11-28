@@ -108,7 +108,8 @@ export type ActionName =
   | "focusSearch"
   | "help"
   | "refresh"
-  | "toggleHidden";
+  | "toggleHidden"
+  | "togglePreview";
 
 /** Статус операции в очереди (зеркалит OpStatus из Rust). */
 export type OpStatus = "queued" | "running" | "paused" | "finished" | "failed" | "cancelled";
@@ -129,4 +130,29 @@ export type OpInfo = {
   files_total: number;
   created_at: number;
   finished_at: number | null;
+};
+
+/** Метаданные для панели предпросмотра (зеркалит PreviewInfo из Rust). */
+export type PreviewInfo = {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size: number | null;
+  modified: number | null;
+  created: number | null;
+  /** image / pdf / text / binary / directory / symlink / other */
+  kind: string;
+  extension: string | null;
+  image_dimensions: [number, number] | null;
+  pdf_pages: number | null;
+  too_large: boolean;
+  link_target: string | null;
+};
+
+/** Прочитанный текст для предпросмотра. */
+export type TextPreview = {
+  content: string;
+  truncated: boolean;
+  bytes_read: number;
+  size: number;
 };

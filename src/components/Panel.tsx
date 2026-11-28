@@ -39,6 +39,8 @@ type Props = {
   onRefresh: () => void;
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
+  onTogglePreview: () => void;
+  previewOpen: boolean;
   onSort: (k: TabState["sortKey"]) => void;
   onClickEntry: (e: Entry, ev: React.MouseEvent, list: Entry[]) => void;
   onOpenEntry: (e: Entry) => void;
@@ -87,6 +89,8 @@ export function Panel({
   onRefresh,
   onOpenSettings,
   onOpenShortcuts,
+  onTogglePreview,
+  previewOpen,
   onSort,
   onClickEntry,
   onOpenEntry,
@@ -152,6 +156,8 @@ export function Panel({
         onRefresh={onRefresh}
         onOpenSettings={onOpenSettings}
         onOpenShortcuts={onOpenShortcuts}
+        onTogglePreview={onTogglePreview}
+        previewOpen={previewOpen}
       />
 
       {tab.listing && (

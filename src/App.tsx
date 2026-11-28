@@ -8,6 +8,7 @@ import { useFileOperations } from "./hooks/useFileOperations";
 import { useOperations } from "./hooks/useOperations";
 import { useFavorites, usePrefs } from "./hooks/useFavorites";
 import { useKeymap, prettyCombo, eventToCombo } from "./hooks/useKeymap";
+import { usePreview } from "./hooks/usePreview";
 import { Sidebar } from "./components/Sidebar";
 import { Panel } from "./components/Panel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
@@ -17,6 +18,7 @@ import { CreateDialog } from "./components/CreateDialog";
 import { ConflictDialog } from "./components/ConflictDialog";
 import { OperationsPanel } from "./components/OperationsPanel";
 import { ContextMenu, type MenuTarget } from "./components/ContextMenu";
+import { PreviewPane } from "./components/PreviewPane";
 import type {
   ActionName,
   ClipboardState,
@@ -52,6 +54,7 @@ export default function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showKeymap, setShowKeymap] = useState(false);
   const [dropActive, setDropActive] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const keymap = useKeymap();
   const favs = useFavorites();
@@ -60,6 +63,14 @@ export default function App() {
   // Активная панель и её срез.
   const activeId = api.activePanelId;
   const { tab: activeTab, entries: activeEntries } = api.slice(activeId);
+
+  // Предпросмотр: показываем ровно один выделенный файл.
+  const previewTarget =
+    activeTab && activeTab.selection.size === 1 ? [...activeTab.selection][0] : null;
+  const previewEntry = previewTarget
+    ? (activeEntries.find((e) => e.path === previewTarget) ?? null)
+    : null;
+  const preview = usePreview(previewTarget, previewOpen);
 
   // ---------- операции ----------
   const doRefreshAll = useCallback(() => api.refreshAll(), [api]);
@@ -215,6 +226,7 @@ export default function App() {
       help: () => setShowShortcuts((v) => !v),
       refresh: () => api.refresh(activeId),
       toggleHidden: () => updatePrefs({ showHidden: !prefs.showHidden }),
+      togglePreview: () => setPreviewOpen((v) => !v),
     }),
     [
       api,
@@ -252,7 +264,17 @@ export default function App() {
       }
       if (ev.key === "Escape") {
         setMenu(null);
+        if (previewOpen) {
+          setPreviewOpen(false);
+          return;
+        }
         api.clearSelection(activeId);
+        return;
+      }
+      // Quick Look: пробел показывает выделенное, не трогая систему настройки.
+      if (ev.key === " " && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+        ev.preventDefault();
+        setPreviewOpen((v) => !v);
         return;
       }
 
@@ -265,7 +287,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actions, api, activeId, activeEntries, activeTab, keymap]);
+  }, [actions, api, activeId, activeEntries, activeTab, keymap, previewOpen]);
 
   // ---------- контекстное меню ----------
   const openMenuFor = useCallback(
@@ -354,6 +376,8 @@ export default function App() {
               onRefresh={() => api.refresh(pid)}
               onOpenSettings={() => setShowSettings(true)}
               onOpenShortcuts={() => setShowShortcuts(true)}
+              onTogglePreview={() => setPreviewOpen((v) => !v)}
+              previewOpen={previewOpen}
               onSort={(k) => api.setSort(pid, k)}
               onClickEntry={(e, ev, list) => api.clickEntry(pid, e, ev, list)}
               onOpenEntry={(e) => {
@@ -390,6 +414,24 @@ export default function App() {
           );
         })}
         </div>
+
+        {previewOpen && (
+          <PreviewPane
+            t={t}
+            entry={previewEntry}
+            info={preview.info}
+            text={preview.text}
+            loading={preview.loading}
+            error={preview.error}
+            imageUrl={preview.imageUrl}
+            onLoadText={preview.loadTextForced}
+            onOpen={() => previewEntry && openEntry(previewEntry)}
+            onReveal={() => {
+              if (previewTarget) void invoke("reveal_path", { path: previewTarget });
+            }}
+            onClose={() => setPreviewOpen(false)}
+          />
+        )}
 
         {dropActive && (
           <div className="drop-overlay">

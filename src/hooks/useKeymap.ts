@@ -36,6 +36,7 @@ export const DEFAULT_KEYS: KeyMap = {
   help: "?",
   refresh: "cmd+r",
   toggleHidden: "cmd+shift+h",
+  togglePreview: "cmd+i",
 };
 
 /** Собрать строковое представление нажатия. */

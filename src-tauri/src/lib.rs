@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Runtime, State, WebviewUrl, WebviewWindowBuilder};
 
 pub mod ops;
+pub mod preview;
 
 pub use ops::{Job, OpInfo, OpStatus, OpsState, Signal, MAX_CONCURRENT};
 
@@ -879,6 +880,230 @@ async fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- предпросмотр файлов (Этап 4) ----------
+
+/// Метаданные для панели быстрого просмотра.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewInfo {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    /// Байты; None, если не удалось получить.
+    pub size: Option<u64>,
+    /// Unix-время последнего изменения, с.
+    pub modified: Option<i64>,
+    /// Unix-время создания (birthtime), с.
+    pub created: Option<i64>,
+    /// Короткое имя типа: image / pdf / text / binary / directory / symlink / other.
+    pub kind: String,
+    /// MIME-подобное расширение без точки.
+    pub extension: Option<String>,
+    /// Размеры изображения в пикселях: (ширина, высота).
+    pub image_dimensions: Option<(u32, u32)>,
+    /// Количество страниц PDF, если удалось быстро прочитать.
+    pub pdf_pages: Option<u32>,
+    /// true, если предпросмотр содержимого требует явного подтверждения
+    /// (файл слишком большой).
+    pub too_large: bool,
+    /// Куда указывает символическая ссылка (только для kind == "symlink").
+    pub link_target: Option<String>,
+}
+
+use crate::preview::{
+    image_dimensions, is_binary_head, mime_kind, pdf_pages, truncate_utf8, PREVIEW_IMAGE_LIMIT,
+    PREVIEW_PDF_LIMIT, PREVIEW_TEXT_LIMIT,
+};
+
+#[tauri::command]
+async fn preview_info(path: String) -> Result<PreviewInfo, String> {
+    let p = expand(&path);
+    let md = tokio::fs::symlink_metadata(&p).await.map_err(|e| e.to_string())?;
+    if md.file_type().is_symlink() {
+        // Показываем, куда ведёт ссылка, но не читаем содержимое цели.
+        let target = std::fs::read_link(&p).map_err(|e| e.to_string())?;
+        return Ok(PreviewInfo {
+            path: p.to_string_lossy().into_owned(),
+            name: p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            is_dir: false,
+            size: None,
+            modified: None,
+            created: None,
+            kind: "symlink".into(),
+            extension: p.extension().map(|e| e.to_string_lossy().into_owned()),
+            image_dimensions: None,
+            pdf_pages: None,
+            too_large: false,
+            link_target: Some(target.to_string_lossy().into_owned()),
+        });
+    }
+    let is_dir = md.is_dir();
+    let size = md.len();
+    let modified = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
+    let created = md.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .or_else(|| {
+            // Файлы без расширения часто текстовые (Makefile, LICENSE).
+            p.file_name().and_then(|n| {
+                let n = n.to_string_lossy().to_ascii_lowercase();
+                if n == "makefile" || n == "dockerfile" || n == "license" || n == "cmakelists.txt" {
+                    Some(n)
+                } else {
+                    None
+                }
+            })
+        });
+
+    if is_dir {
+        return Ok(PreviewInfo {
+            path: p.to_string_lossy().into_owned(),
+            name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            is_dir: true,
+            size: None,
+            modified,
+            created,
+            kind: "directory".into(),
+            extension: ext,
+            image_dimensions: None,
+            pdf_pages: None,
+            too_large: false,
+            link_target: None,
+        });
+    }
+
+    let kind = ext.as_deref().map(mime_kind).unwrap_or("other");
+    let mut dims = None;
+    let mut pages = None;
+    let mut too_large = false;
+
+    match kind {
+        "image" => {
+            too_large = size > PREVIEW_IMAGE_LIMIT;
+            if !too_large {
+                let mut buf = vec![0u8; 64];
+                let n = read_head(&p, &mut buf).await?;
+                dims = image_dimensions(&buf[..n]);
+            }
+        }
+        "pdf" => {
+            too_large = size > PREVIEW_PDF_LIMIT;
+            if !too_large {
+                // Читаем не более 8 MiB с начала и 8 MiB с конца:
+                // xref/trailer обычно в конце, но /Type /Page бывает и в потоках.
+                let head = read_chunk(&p, 0, 8 * 1024 * 1024).await?;
+                let mut buf = head;
+                if size > buf.len() as u64 {
+                    let tail_start = size - 8 * 1024 * 1024;
+                    let tail = read_chunk(&p, tail_start, 8 * 1024 * 1024).await?;
+                    buf.extend_from_slice(&tail);
+                }
+                pages = pdf_pages(&buf);
+            }
+        }
+        "text" => {
+            // Читаем только голову, чтобы понять бинарность и кодировку.
+            let mut buf = vec![0u8; 8192];
+            let n = read_head(&p, &mut buf).await?;
+            let head = &buf[..n];
+            if is_binary_head(head) {
+                // Нулевые байты в первых 8 KiB — почти наверняка бинарный файл.
+                return Ok(PreviewInfo {
+                    path: p.to_string_lossy().into_owned(),
+                    name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    is_dir: false,
+                    size: Some(size),
+                    modified,
+                    created,
+                    kind: "binary".into(),
+                    extension: ext,
+                    image_dimensions: None,
+                    pdf_pages: None,
+                    too_large: false,
+                    link_target: None,
+                });
+            }
+            too_large = size > PREVIEW_TEXT_LIMIT;
+        }
+        _ => {}
+    }
+
+    Ok(PreviewInfo {
+        path: p.to_string_lossy().into_owned(),
+        name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        is_dir: false,
+        size: Some(size),
+        modified,
+        created,
+        kind: kind.into(),
+        extension: ext,
+        image_dimensions: dims,
+        pdf_pages: pages,
+        too_large,
+        link_target: None,
+    })
+}
+
+async fn read_head(p: &Path, buf: &mut [u8]) -> Result<usize, String> {
+    use tokio::io::AsyncReadExt;
+    let mut f = tokio::fs::File::open(p).await.map_err(|e| e.to_string())?;
+    Ok(f.read(buf).await.map_err(|e| e.to_string())?)
+}
+
+async fn read_chunk(p: &Path, offset: u64, len: u64) -> Result<Vec<u8>, String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+    let mut f = tokio::fs::File::open(p).await.map_err(|e| e.to_string())?;
+    f.seek(SeekFrom::Start(offset)).await.map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; len as usize];
+    let n = f.read(&mut buf).await.map_err(|e| e.to_string())?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
+/// Результат чтения текстового файла для предпросмотра.
+#[derive(Debug, Clone, Serialize)]
+pub struct TextPreview {
+    pub content: String,
+    pub truncated: bool,
+    /// Прочитано байт (после декодирования — длина строки).
+    pub bytes_read: u64,
+    pub size: u64,
+}
+
+/// Прочитать первые байты файла как UTF-8.
+///
+/// Большие файлы не читаются целиком: обрезаем по `limit` байт и по границе
+/// символа UTF-8, чтобы не показать «квадратик» в начале следующего символа.
+#[tauri::command]
+async fn read_text_preview(path: String, limit: Option<u64>) -> Result<TextPreview, String> {
+    let p = expand(&path);
+    let md = tokio::fs::metadata(&p).await.map_err(|e| e.to_string())?;
+    let size = md.len();
+    let limit = limit.unwrap_or(PREVIEW_TEXT_LIMIT).min(PREVIEW_TEXT_LIMIT).max(1024) as usize;
+    let read_len = size.min(limit as u64) as usize;
+    let mut buf = vec![0u8; read_len];
+    {
+        use tokio::io::AsyncReadExt;
+        let mut f = tokio::fs::File::open(&p).await.map_err(|e| e.to_string())?;
+        let n = f.read(&mut buf).await.map_err(|e| e.to_string())?;
+        buf.truncate(n);
+    }
+    let truncated = (buf.len() as u64) < size;
+    // Если обрезали посреди многобайтового символа — отступаем к валидной границе.
+    let valid = truncate_utf8(&buf, buf.len());
+    let valid_upto = valid.len();
+    let content = String::from_utf8_lossy(valid).into_owned();
+    Ok(TextPreview {
+        bytes_read: valid_upto as u64,
+        content,
+        truncated,
+        size,
+    })
+}
+
 /// Открыть новое окно Кладовки.
 ///
 /// В Tauri 2 окно нельзя клонировать из конфига напрямую, поэтому создаём
@@ -944,7 +1169,9 @@ pub fn run() {
             search_tree,
             open_path,
             reveal_path,
-            new_window
+            new_window,
+            preview_info,
+            read_text_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

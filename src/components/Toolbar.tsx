@@ -29,6 +29,8 @@ type Props = {
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
   onViewMode?: (v: ViewMode) => void;
+  onTogglePreview?: () => void;
+  previewOpen?: boolean;
   onToggleDualPane?: () => void;
   dualPane?: boolean;
 };
@@ -58,6 +60,8 @@ export function Toolbar({
   onOpenSettings,
   onOpenShortcuts,
   onViewMode,
+  onTogglePreview,
+  previewOpen,
   onToggleDualPane,
   dualPane,
 }: Props) {
@@ -127,6 +131,15 @@ export function Toolbar({
       <button className="tb" onClick={onRefresh} title={t.refresh}>
         ⟳
       </button>
+      {onTogglePreview && (
+        <button
+          className={"tb" + (previewOpen ? " on" : "")}
+          onClick={onTogglePreview}
+          title={t.togglePreview}
+        >
+          👁
+        </button>
+      )}
       {onViewMode && (
         <button
           className="tb"
