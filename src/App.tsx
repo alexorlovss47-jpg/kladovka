@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { dict, resolveLang, type Lang, type Dict } from "./i18n";
+import { playSound, loadSoundSettings, saveSoundSettings, type SoundSettings } from "./sounds";
 import "./App.css";
 
 type Entry = {
@@ -117,6 +118,8 @@ export default function App() {
     () => (localStorage.getItem("kladovka-theme") as "auto" | "light" | "dark") || "auto"
   );
   const [dropActive, setDropActive] = useState(false);
+  const [soundSettings, setSoundSettings] = useState<SoundSettings>(() => loadSoundSettings());
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const lang: Lang = resolveLang(langPref);
   const t: Dict = dict[lang];
   const fmtSize = fmtSizeWith(t);
@@ -196,6 +199,11 @@ export default function App() {
     const un = listen<OpProgress>("op-progress", (ev) => {
       setProgress(ev.payload);
       if (ev.payload.finished) {
+        if (!ev.payload.error) {
+          playSound(ev.payload.kind === "move" ? "move" : "copy", soundSettings);
+        } else {
+          playSound("error", soundSettings);
+        }
         setTimeout(() => {
           setProgress(null);
           if (!ev.payload.error) refresh();
@@ -205,7 +213,7 @@ export default function App() {
     return () => {
       un.then((f) => f());
     };
-  }, [refresh]);
+  }, [refresh, soundSettings]);
 
   // Тема: auto -> следует за системой (media query), иначе атрибут на <html>
   useEffect(() => {
@@ -228,6 +236,7 @@ export default function App() {
             // файл из самой папки в эту же папку не трогаем (иначе «file 1»)
             const sources = p.paths.filter((s) => s.slice(0, s.lastIndexOf("/")) !== dest);
             if (sources.length) {
+              playSound("drop", soundSettings);
               invoke("copy_paths", { sources, destDir: dest })
                 .then(() => refresh())
                 .catch((e) => setError(String(e)));
@@ -313,8 +322,10 @@ export default function App() {
   };
 
   const openEntry = (e: Entry) => {
-    if (e.is_dir) go(e.path);
-    else invoke("open_path", { path: e.path }).catch((err) => setError(String(err)));
+    if (e.is_dir) {
+      playSound("select", soundSettings);
+      go(e.path);
+    } else invoke("open_path", { path: e.path }).catch((err) => setError(String(err)));
   };
 
   const doCopy = async () => {
@@ -334,10 +345,12 @@ export default function App() {
 
   const doTrash = async () => {
     if (!selection.size) return;
+    // Звук не играем: Finder при перемещении в Корзину проигрывает свой системный звук
     try {
       await invoke("trash_paths", { paths: [...selection] });
       refresh();
     } catch (e) {
+      playSound("error", soundSettings);
       setError(String(e));
     }
   };
@@ -345,9 +358,11 @@ export default function App() {
   const doRename = async (path: string, name: string) => {
     try {
       await invoke("rename_path", { from: path, toName: name });
+      playSound("rename", soundSettings);
       setRenaming(null);
       refresh();
     } catch (e) {
+      playSound("error", soundSettings);
       setError(String(e));
     }
   };
@@ -389,9 +404,11 @@ export default function App() {
       } else {
         await invoke("create_file", { parent: listing.path, name });
       }
+      playSound("new", soundSettings);
       setDialog(null);
       refresh();
     } catch (e) {
+      playSound("error", soundSettings);
       setError(String(e));
       setDialog(null);
     }
@@ -435,6 +452,21 @@ export default function App() {
       if (ev.key === "Backspace") {
         ev.preventDefault();
         goUp();
+        return;
+      }
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === "f") {
+        ev.preventDefault();
+        document.querySelector<HTMLInputElement>(".search")?.focus();
+        return;
+      }
+      if (ev.key === "Escape") {
+        setSelection(new Set());
+        setAnchor(null);
+        return;
+      }
+      if (ev.key === "?" || (ev.shiftKey && ev.key === "/")) {
+        ev.preventDefault();
+        setShowShortcuts((v) => !v);
         return;
       }
       if ((ev.metaKey || ev.ctrlKey) && ev.key === "c" && selection.size) {
@@ -611,6 +643,9 @@ export default function App() {
           <button className="tb" onClick={() => setShowSettings(true)} title={t.settings}>
             ⚙
           </button>
+          <button className="tb" onClick={() => setShowShortcuts(true)} title={t.shortcuts}>
+            ?
+          </button>
         </div>
 
         {listing && (
@@ -771,6 +806,57 @@ export default function App() {
           </div>
         )}
 
+        <div className="bottom-hint">
+          <span className="bh-item"><kbd>↑↓</kbd> {t.scUp}</span>
+          <span className="bh-item"><kbd>{t.scAddKey}</kbd> {t.scAdd}</span>
+          <span className="bh-item"><kbd>{t.scRangeKey}</kbd> {t.scRange}</span>
+          <span className="bh-item"><kbd>⌘A</kbd> {t.scAll}</span>
+          <span className="bh-item"><kbd>⌘⌫</kbd> {t.scTrash}</span>
+          <span className="bh-item"><kbd>?</kbd> {t.scHelp}</span>
+        </div>
+
+        {showShortcuts && (
+          <div className="modal-backdrop" onClick={() => setShowShortcuts(false)}>
+            <div className="modal shortcuts-modal" onClick={(ev) => ev.stopPropagation()}>
+              <div className="modal-title">{t.shortcuts}</div>
+              <div className="sc-grid">
+                <div>
+                  <div className="sc-title">{t.shortcutsNav}</div>
+                  <div className="sc-row"><span>↑ ↓</span><span>{t.scUp}</span></div>
+                  <div className="sc-row"><span>↵</span><span>{t.scOpen}</span></div>
+                  <div className="sc-row"><span>⌫</span><span>{t.scUpDir}</span></div>
+                  <div className="sc-row"><span>← →</span><span>{t.scHistory}</span></div>
+                </div>
+                <div>
+                  <div className="sc-title">{t.shortcutsSelect}</div>
+                  <div className="sc-row"><span>{t.scAddKey}</span><span>{t.scAdd}</span></div>
+                  <div className="sc-row"><span>{t.scRangeKey}</span><span>{t.scRange}</span></div>
+                  <div className="sc-row"><span>⌘A</span><span>{t.scAll}</span></div>
+                  <div className="sc-row"><span>Esc</span><span>{t.scClear}</span></div>
+                </div>
+                <div>
+                  <div className="sc-title">{t.shortcutsActions}</div>
+                  <div className="sc-row"><span>⌘C</span><span>{t.scCopy}</span></div>
+                  <div className="sc-row"><span>⌘X</span><span>{t.scCut}</span></div>
+                  <div className="sc-row"><span>⌘V</span><span>{t.scPaste}</span></div>
+                  <div className="sc-row"><span>⌘⌫</span><span>{t.scTrash}</span></div>
+                  <div className="sc-row"><span>F2</span><span>{t.scRename}</span></div>
+                </div>
+                <div>
+                  <div className="sc-title">{t.shortcutsMisc}</div>
+                  <div className="sc-row"><span>⌘F</span><span>{t.scSearch}</span></div>
+                  <div className="sc-row"><span>?</span><span>{t.scHelp}</span></div>
+                </div>
+              </div>
+              <div className="modal-actions">
+                <button className="act primary" onClick={() => setShowShortcuts(false)}>
+                  {t.close}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showSettings && (
           <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
             <div className="modal" onClick={(ev) => ev.stopPropagation()}>
@@ -809,6 +895,77 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              <div className="set-row">
+                <span className="set-label">{t.sounds}</span>
+                <div className="lang-opts">
+                  <button
+                    className={"lang-btn" + (soundSettings.enabled ? " active" : "")}
+                    onClick={() => {
+                      const next = { ...soundSettings, enabled: !soundSettings.enabled };
+                      setSoundSettings(next);
+                      saveSoundSettings(next);
+                    }}
+                  >
+                    {soundSettings.enabled ? t.soundsOn : t.soundsOff}
+                  </button>
+                </div>
+              </div>
+              {soundSettings.enabled && (
+                <>
+                  <div className="set-row">
+                    <span className="set-label">
+                      {t.soundVolume} · {Math.round(soundSettings.volume * 100)}%
+                    </span>
+                    <input
+                      className="volume-slider"
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(soundSettings.volume * 100)}
+                      onChange={(e) => {
+                        const next = { ...soundSettings, volume: Number(e.target.value) / 100 };
+                        setSoundSettings(next);
+                        saveSoundSettings(next);
+                      }}
+                    />
+                  </div>
+                  {(
+                    [
+                      ["select", t.soundSelect],
+                      ["copy", t.soundCopy],
+                      ["move", t.soundMove],
+                      ["drop", t.soundDrop],
+                      ["error", t.soundError],
+                      ["rename", t.soundRename],
+                      ["new", t.soundNew],
+                    ] as const
+                  ).map(([name, label]) => (
+                    <div className="set-row sound-row" key={name}>
+                      <span className="sound-name">{label}</span>
+                      <div className="lang-opts">
+                        <button
+                          className={"lang-btn" + (soundSettings.muted[name] ? "" : " active")}
+                          onClick={() => {
+                            const next = {
+                              ...soundSettings,
+                              muted: { ...soundSettings.muted, [name]: !soundSettings.muted[name] },
+                            };
+                            setSoundSettings(next);
+                            saveSoundSettings(next);
+                          }}
+                        >
+                          {soundSettings.muted[name]
+                            ? t.soundOffShort
+                            : t.soundOnShort}
+                        </button>
+                        <button className="lang-btn" onClick={() => playSound(name, soundSettings)}>
+                          {t.test}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
               <div className="modal-actions">
                 <button className="act primary" onClick={() => setShowSettings(false)}>
                   {t.close}

@@ -652,6 +652,110 @@ body,
   font-weight: 600;
 }
 
+/* ---------- звуки ---------- */
+
+.volume-slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.sound-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.sound-name {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.sound-row .lang-opts {
+  flex-wrap: nowrap;
+}
+
+/* ---------- горячие клавиши ---------- */
+
+.shortcuts-modal {
+  width: 640px;
+  max-height: 82vh;
+  overflow: auto;
+}
+
+.sc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 22px;
+}
+
+.sc-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.sc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.sc-row span:first-child {
+  min-width: 64px;
+  text-align: center;
+  padding: 2px 7px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+.sc-row span:last-child {
+  color: var(--text);
+}
+
+/* нижняя компактная подсказка */
+.bottom-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+  flex-wrap: wrap;
+}
+
+.bottom-hint .bh-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.bottom-hint kbd {
+  padding: 1px 5px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--text);
+}
+
 .act.primary:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
