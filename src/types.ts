@@ -55,6 +55,61 @@ export type Crumb = { label: string; path: string };
 
 export type FileTemplate = { label: string; ext: string; icon: string };
 
+/** Режим отображения списка файлов. */
+export type ViewMode = "list" | "grid" | "compact";
+
+/** Состояние одной вкладки панели. */
+export type TabState = {
+  id: string;
+  history: string[];
+  histIdx: number;
+  listing: DirListing | null;
+  loading: boolean;
+  error: string | null;
+  query: string;
+  searchResults: Entry[] | null;
+  sortKey: SortKey;
+  sortDir: SortDir;
+  /** Выделенные пути активной вкладки — своё у каждой вкладки. */
+  selection: Set<string>;
+  /** Якорь для shift-выделения. */
+  anchor: string | null;
+};
+
+/** Состояние панели: вкладки + активная вкладка. */
+export type PanelState = {
+  id: string;
+  tabs: TabState[];
+  activeTabId: string;
+};
+
+export type Favorite = { path: string; name: string };
+
+/** Действие, на которое можно назначить горячую клавишу. */
+export type ActionName =
+  | "newTab"
+  | "closeTab"
+  | "nextTab"
+  | "prevTab"
+  | "focusOtherPane"
+  | "toggleDualPane"
+  | "newWindow"
+  | "newFolder"
+  | "goUp"
+  | "goBack"
+  | "goForward"
+  | "openEntry"
+  | "rename"
+  | "trash"
+  | "selectAll"
+  | "copy"
+  | "cut"
+  | "paste"
+  | "focusSearch"
+  | "help"
+  | "refresh"
+  | "toggleHidden";
+
 /** Статус операции в очереди (зеркалит OpStatus из Rust). */
 export type OpStatus = "queued" | "running" | "paused" | "finished" | "failed" | "cancelled";
 

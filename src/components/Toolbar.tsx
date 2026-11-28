@@ -2,7 +2,7 @@
 
 import type { Dict } from "../i18n";
 import { fileTemplates } from "../format";
-import type { Crumb } from "../types";
+import type { Crumb, ViewMode } from "../types";
 
 type Props = {
   t: Dict;
@@ -13,6 +13,7 @@ type Props = {
   query: string;
   showHidden: boolean;
   newMenu: boolean;
+  viewMode: ViewMode;
   onBack: () => void;
   onForward: () => void;
   onUp: () => void;
@@ -27,6 +28,9 @@ type Props = {
   onRefresh: () => void;
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
+  onViewMode?: (v: ViewMode) => void;
+  onToggleDualPane?: () => void;
+  dualPane?: boolean;
 };
 
 export function Toolbar({
@@ -38,6 +42,7 @@ export function Toolbar({
   query,
   showHidden,
   newMenu,
+  viewMode,
   onBack,
   onForward,
   onUp,
@@ -52,6 +57,9 @@ export function Toolbar({
   onRefresh,
   onOpenSettings,
   onOpenShortcuts,
+  onViewMode,
+  onToggleDualPane,
+  dualPane,
 }: Props) {
   const templates = fileTemplates(t);
 
@@ -119,6 +127,24 @@ export function Toolbar({
       <button className="tb" onClick={onRefresh} title={t.refresh}>
         ⟳
       </button>
+      {onViewMode && (
+        <button
+          className="tb"
+          title={`${t.viewMode}: ${viewMode === "list" ? t.viewList : viewMode === "grid" ? t.viewGrid : t.viewCompact}`}
+          onClick={() => onViewMode(viewMode === "list" ? "grid" : viewMode === "grid" ? "compact" : "list")}
+        >
+          {viewMode === "list" ? "☰" : viewMode === "grid" ? "▦" : "≡"}
+        </button>
+      )}
+      {onToggleDualPane && (
+        <button
+          className={"tb" + (dualPane ? " on" : "")}
+          onClick={onToggleDualPane}
+          title={t.toggleDualPane}
+        >
+          ◫
+        </button>
+      )}
       <button className="tb" onClick={onOpenSettings} title={t.settings}>
         ⚙
       </button>

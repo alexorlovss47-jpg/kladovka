@@ -2,16 +2,19 @@
 
 import type { Dict, Lang } from "../i18n";
 import { playSound, saveSoundSettings, type SoundName, type SoundSettings } from "../sounds";
-import type { ThemePref } from "../types";
+import type { ThemePref, ViewMode } from "../types";
 
 type Props = {
   t: Dict;
   langPref: Lang | "auto";
   themePref: ThemePref;
   sounds: SoundSettings;
+  viewMode: ViewMode;
   onLangChange: (v: Lang | "auto") => void;
   onThemeChange: (v: ThemePref) => void;
   onSoundsChange: (v: SoundSettings) => void;
+  onViewModeChange: (v: ViewMode) => void;
+  onOpenKeymap?: () => void;
   onClose: () => void;
 };
 
@@ -30,9 +33,12 @@ export function SettingsModal({
   langPref,
   themePref,
   sounds,
+  viewMode,
   onLangChange,
   onThemeChange,
   onSoundsChange,
+  onViewModeChange,
+  onOpenKeymap,
   onClose,
 }: Props) {
   const update = (next: SoundSettings) => {
@@ -74,6 +80,36 @@ export function SettingsModal({
             ))}
           </div>
         </div>
+
+        <div className="set-row">
+          <span className="set-label">{t.viewMode}</span>
+          <div className="lang-opts">
+            {([
+              ["list", t.viewList, "☰"],
+              ["grid", t.viewGrid, "▦"],
+              ["compact", t.viewCompact, "≡"],
+            ] as const).map(([v, label, ico]) => (
+              <button
+                key={v}
+                className={"lang-btn" + (viewMode === v ? " active" : "")}
+                onClick={() => onViewModeChange(v)}
+              >
+                {ico} {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {onOpenKeymap && (
+          <div className="set-row">
+            <span className="set-label">{t.shortcutsConfig}</span>
+            <div className="lang-opts">
+              <button className="lang-btn" onClick={onOpenKeymap}>
+                {t.shortcutsConfig}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="set-row">
           <span className="set-label">{t.sounds}</span>

@@ -3,8 +3,8 @@ use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, Runtime, State};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tauri::{AppHandle, Emitter, Runtime, State, WebviewUrl, WebviewWindowBuilder};
 
 pub mod ops;
 
@@ -879,6 +879,47 @@ async fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Открыть новое окно Кладовки.
+///
+/// В Tauri 2 окно нельзя клонировать из конфига напрямую, поэтому создаём
+/// WebviewWindow с теми же параметрами, что и главное окно в tauri.conf.json.
+/// Метка уникальна, иначе создание второго окна с тем же label паникует.
+#[tauri::command]
+async fn new_window(app: AppHandle, path: Option<String>) -> Result<String, String> {
+    new_window_impl(&app, path).await
+}
+
+/// Логика создания окна, вынесена из команды ради тестов на mock-рантайме.
+pub async fn new_window_impl<R: Runtime>(
+    app: &AppHandle<R>,
+    path: Option<String>,
+) -> Result<String, String> {
+    let label = format!("win-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title("Кладовка")
+        .inner_size(1100.0, 720.0)
+        .min_inner_size(700.0, 450.0)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    if let Some(script) = start_path_script(path.as_deref()) {
+        builder = builder.initialization_script(&script);
+    }
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(label)
+}
+
+/// Скрипт, задающий стартовый каталог окна.
+///
+/// Путь подставляется через serde_json, поэтому кавычки, обратные слэши и
+/// юникод в имени каталога не ломают JS-литерал. `None` — скрипт не нужен.
+pub fn start_path_script(path: Option<&str>) -> Option<String> {
+    let p = path?;
+    let json = serde_json::to_string(p).ok()?;
+    Some(format!("window.__KLADOVKA_START_PATH__ = {json};"))
+}
+
+static WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -902,7 +943,8 @@ pub fn run() {
             cancel_op,
             search_tree,
             open_path,
-            reveal_path
+            reveal_path,
+            new_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

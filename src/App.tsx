@@ -1,34 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { dict, resolveLang, type Lang, type Dict } from "./i18n";
 import { loadSoundSettings, playSound, type SoundSettings } from "./sounds";
-import {
-  buildCrumbs,
-  compareEntries,
-  fmtSizeWith,
-} from "./format";
-import { useNavigation } from "./hooks/useNavigation";
+import { usePanels } from "./hooks/usePanels";
 import { useFileOperations } from "./hooks/useFileOperations";
 import { useOperations } from "./hooks/useOperations";
+import { useFavorites, usePrefs } from "./hooks/useFavorites";
+import { useKeymap, prettyCombo, eventToCombo } from "./hooks/useKeymap";
 import { Sidebar } from "./components/Sidebar";
-import { Toolbar } from "./components/Toolbar";
-import { FileList } from "./components/FileList";
-import { ActionBar } from "./components/ActionBar";
+import { Panel } from "./components/Panel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
+import { KeymapModal } from "./components/KeymapModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { CreateDialog } from "./components/CreateDialog";
 import { ConflictDialog } from "./components/ConflictDialog";
 import { OperationsPanel } from "./components/OperationsPanel";
+import { ContextMenu, type MenuTarget } from "./components/ContextMenu";
 import type {
+  ActionName,
   ClipboardState,
   DiskInfo,
   Entry,
-  SortDir,
-  SortKey,
   ThemePref,
 } from "./types";
 import "./App.css";
+
+/** Контекстное меню: где и для чего открыто. */
+type MenuState = { x: number; y: number; panelId: string; target: MenuTarget } | null;
 
 export default function App() {
   // ---------- настройки ----------
@@ -39,66 +38,55 @@ export default function App() {
     () => (localStorage.getItem("kladovka-theme") as ThemePref) || "auto",
   );
   const [soundSettings, setSoundSettings] = useState<SoundSettings>(() => loadSoundSettings());
-  const [showHidden, setShowHidden] = useState(false);
   const lang: Lang = resolveLang(langPref);
   const t: Dict = dict[lang];
-  const fmtSize = fmtSizeWith(t);
 
-  // ---------- навигация ----------
-  const nav = useNavigation(showHidden);
-  const { listing, history, histIdx, loading, error, setError, load, refresh, go, goBack, goForward, goUp } =
-    nav;
-
-  // ---------- состояние списка ----------
-  const [selection, setSelection] = useState<Set<string>>(new Set());
-  const [anchor, setAnchor] = useState<string | null>(null);
-  const [sortKey, setSortKey] = useState<SortKey>("name");
-  const [sortDir, setSortDir] = useState<SortDir>(1);
-  const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<Entry[] | null>(null);
-  const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
+  const { prefs, update: updatePrefs } = usePrefs();
+  const [home, setHome] = useState<string | null>(null);
   const [places, setPlaces] = useState<DiskInfo[]>([]);
   const [disks, setDisks] = useState<DiskInfo[]>([]);
-  const [dropActive, setDropActive] = useState(false);
-  const [newMenu, setNewMenu] = useState(false);
+  const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
+  const [menu, setMenu] = useState<MenuState>(null);
+  const [newMenuPane, setNewMenuPane] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const listRef = useRef<HTMLDivElement>(null);
+  const [showKeymap, setShowKeymap] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
 
-  const clearClipboard = useCallback(() => setClipboard(null), []);
+  const keymap = useKeymap();
+  const favs = useFavorites();
+  const api = usePanels(prefs.showHidden, home);
+
+  // Активная панель и её срез.
+  const activeId = api.activePanelId;
+  const { tab: activeTab, entries: activeEntries } = api.slice(activeId);
 
   // ---------- операции ----------
-  const sortedEntries = useMemo(
-    () => [...(searchResults ?? listing?.entries ?? [])].sort(compareEntries(sortKey, sortDir)),
-    [searchResults, listing, sortKey, sortDir],
-  );
+  const doRefreshAll = useCallback(() => api.refreshAll(), [api]);
 
   const ops = useFileOperations({
     sounds: soundSettings,
-    currentPath: listing?.path,
-    entries: sortedEntries,
-    refresh,
-    setError,
-    clearClipboard,
+    currentPath: activeTab?.listing?.path,
+    entries: activeEntries,
+    refresh: doRefreshAll,
+    setError: (msg) => api.setError(activeId, msg),
+    clearClipboard: () => setClipboard(null),
   });
-  const { renaming, setRenaming, renameValue, setRenameValue, dialog, setDialog, conflict, setConflict } =
-    ops;
 
-  const operations = useOperations({ sounds: soundSettings, onFinished: refresh });
+  const operations = useOperations({ sounds: soundSettings, onFinished: doRefreshAll });
 
-  // ---------- загрузка окружения ----------
+  // ---------- окружение ----------
   useEffect(() => {
     (async () => {
-      const home = await invoke<string>("home_dir");
+      const injected = (window as unknown as { __KLADOVKA_START_PATH__?: string })
+        .__KLADOVKA_START_PATH__;
+      const h = injected ?? (await invoke<string>("home_dir"));
+      setHome(h);
       setPlaces(await invoke<DiskInfo[]>("special_dirs"));
       setDisks(await invoke<DiskInfo[]>("disk_info"));
-      await load(home, true);
-      nav.resetHistory(home);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Внешние диски подключают во время работы — опрашиваем раз в 3 с.
   useEffect(() => {
     let alive = true;
     const sync = async () => {
@@ -110,7 +98,7 @@ export default function App() {
           return key(prev) === key(next) ? prev : next;
         });
       } catch {
-        /* диск могли отключить в момент чтения — повторим на следующем тике */
+        /* диск могли отключить в момент чтения */
       }
     };
     const timer = window.setInterval(sync, 3000);
@@ -120,20 +108,14 @@ export default function App() {
     };
   }, []);
 
-  // Смена фильтра скрытых файлов перечитывает каталог.
-  useEffect(() => {
-    if (listing) void load(listing.path, false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showHidden]);
-
-  // Тема: auto -> следует за системой, иначе атрибут на <html>.
+  // Тема.
   useEffect(() => {
     const root = document.documentElement;
     if (themePref === "auto") root.removeAttribute("data-theme");
     else root.setAttribute("data-theme", themePref);
   }, [themePref]);
 
-  // Приём файлов, перетащенных из Finder.
+  // Приём файлов из Finder.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
@@ -146,9 +128,8 @@ export default function App() {
           setDropActive(false);
         } else if (p.type === "drop") {
           setDropActive(false);
-          if (!p.paths.length || !listing) return;
-          const dest = listing.path;
-          // Файл из самой папки в эту же папку не трогаем (иначе «file 1»).
+          const dest = activeTab?.listing?.path;
+          if (!p.paths.length || !dest) return;
           const sources = p.paths.filter((s) => s.slice(0, s.lastIndexOf("/")) !== dest);
           if (!sources.length) return;
           playSound("drop", soundSettings);
@@ -163,255 +144,252 @@ export default function App() {
       cancelled = true;
       if (unlisten) unlisten();
     };
-  }, [listing, ops, soundSettings]);
+  }, [activeTab?.listing?.path, ops, soundSettings]);
 
-  // ---------- действия над списком ----------
-  const toggleSort = (k: SortKey) => {
-    if (sortKey === k) setSortDir((d) => (d === 1 ? -1 : 1));
-    else {
-      setSortKey(k);
-      setSortDir(k === "name" ? 1 : -1);
-    }
-  };
-
-  const clickEntry = (e: Entry, ev: React.MouseEvent) => {
-    const next = new Set(ev.metaKey || ev.ctrlKey ? selection : []);
-    if (ev.shiftKey && anchor) {
-      const paths = sortedEntries.map((x) => x.path);
-      const a = paths.indexOf(anchor);
-      const b = paths.indexOf(e.path);
-      if (a >= 0 && b >= 0) {
-        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(paths[i]);
+  // ---------- действия ----------
+  const openEntry = useCallback(
+    (e: Entry) => {
+      if (e.is_dir) {
+        playSound("select", soundSettings);
+        api.go(activeId, e.path);
+      } else {
+        invoke("open_path", { path: e.path }).catch((err) => api.setError(activeId, String(err)));
       }
-    } else if (next.has(e.path)) {
-      next.delete(e.path);
-    } else {
-      next.add(e.path);
-    }
-    setSelection(next);
-    setAnchor(e.path);
-  };
+    },
+    [api, activeId, soundSettings],
+  );
 
-  const openEntry = (e: Entry) => {
-    if (e.is_dir) {
-      playSound("select", soundSettings);
-      go(e.path);
-    } else {
-      invoke("open_path", { path: e.path }).catch((err) => setError(String(err)));
-    }
-  };
-
-  const doSearch = async () => {
-    if (!query.trim() || !listing) {
-      setSearchResults(null);
-      return;
-    }
+  const doNewWindow = useCallback(async (path?: string) => {
     try {
-      setSearchResults(await invoke<Entry[]>("search_tree", { root: listing.path, query, limit: 300 }));
+      await invoke<string>("new_window", { path: path ?? null });
     } catch (e) {
-      setError(String(e));
+      console.error(e);
     }
-  };
+  }, []);
 
-  const onEmptyClick = (ev: React.MouseEvent) => {
-    if (ev.target === ev.currentTarget) {
-      setSelection(new Set());
-      setAnchor(null);
-    }
-  };
+  const activeSelection = activeTab?.selection ?? new Set<string>();
+  const singleSelection = activeSelection.size === 1 ? [...activeSelection][0] : null;
 
-  const totalSize = useMemo(() => {
-    const sel = sortedEntries.filter((e) => selection.has(e.path) && e.size !== null);
-    return sel.reduce((s, e) => s + (e.size ?? 0), 0);
-  }, [sortedEntries, selection]);
+  const startRenameOf = useCallback(() => {
+    if (!singleSelection) return;
+    const e = activeEntries.find((x) => x.path === singleSelection);
+    if (e) ops.startRename(e);
+  }, [singleSelection, activeEntries, ops]);
 
-  const crumbs = useMemo(() => buildCrumbs(listing?.path), [listing]);
+  const trashSelection = useCallback(() => {
+    const paths = [...activeSelection];
+    void ops.trash(paths);
+  }, [activeSelection, ops]);
 
-  // ---------- горячие клавиши ----------
+  // ---------- хоткеи ----------
+  const actions = useMemo<Record<ActionName, () => void>>(
+    () => ({
+      newTab: () => api.addTab(activeId, activeTab?.listing?.path),
+      closeTab: () => activeTab && api.closeTab(activeId, activeTab.id),
+      nextTab: () => api.cycleTab(activeId, 1),
+      prevTab: () => api.cycleTab(activeId, -1),
+      focusOtherPane: () => api.focusOtherPane(),
+      toggleDualPane: () => api.toggleDualPane(),
+      newWindow: () => void doNewWindow(activeTab?.listing?.path),
+      newFolder: () => ops.setDialog({ kind: "dir", value: t.defaultFolderName }),
+      goUp: () => api.goUp(activeId),
+      goBack: () => api.goBack(activeId),
+      goForward: () => api.goForward(activeId),
+      openEntry: () => {
+        if (!activeTab?.anchor) return;
+        const e = activeEntries.find((x) => x.path === activeTab.anchor);
+        if (e) openEntry(e);
+      },
+      rename: startRenameOf,
+      trash: trashSelection,
+      selectAll: () => api.setSelection(activeId, new Set(activeEntries.map((e) => e.path))),
+      copy: () => {
+        if (activeSelection.size) setClipboard({ mode: "copy", paths: [...activeSelection] });
+      },
+      cut: () => {
+        if (activeSelection.size) setClipboard({ mode: "cut", paths: [...activeSelection] });
+      },
+      paste: () => void ops.paste(clipboard),
+      focusSearch: () =>
+        document.querySelector<HTMLInputElement>(`.pane.active .search`)?.focus(),
+      help: () => setShowShortcuts((v) => !v),
+      refresh: () => api.refresh(activeId),
+      toggleHidden: () => updatePrefs({ showHidden: !prefs.showHidden }),
+    }),
+    [
+      api,
+      activeId,
+      activeTab,
+      activeEntries,
+      activeSelection,
+      clipboard,
+      ops,
+      t,
+      doNewWindow,
+      openEntry,
+      startRenameOf,
+      trashSelection,
+      prefs.showHidden,
+      updatePrefs,
+    ],
+  );
+
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      const tag = (ev.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const el = ev.target as HTMLElement;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
 
+      // Навигация стрелками не настраивается: она контекстна.
       if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
         ev.preventDefault();
-        if (!sortedEntries.length) return;
-        const paths = sortedEntries.map((e) => e.path);
-        let idx = anchor ? paths.indexOf(anchor) : -1;
+        if (!activeEntries.length) return;
+        const paths = activeEntries.map((e) => e.path);
+        let idx = activeTab?.anchor ? paths.indexOf(activeTab.anchor) : -1;
         idx = ev.key === "ArrowDown" ? Math.min(idx + 1, paths.length - 1) : Math.max(idx - 1, 0);
-        setSelection(new Set([paths[idx]]));
-        setAnchor(paths[idx]);
-        return;
-      }
-      if (ev.key === "Enter" && anchor) {
-        const e = sortedEntries.find((x) => x.path === anchor);
-        if (e) openEntry(e);
-        return;
-      }
-      if (ev.key === "Backspace") {
-        ev.preventDefault();
-        goUp();
-        return;
-      }
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === "f") {
-        ev.preventDefault();
-        document.querySelector<HTMLInputElement>(".search")?.focus();
+        api.setSelection(activeId, new Set([paths[idx]]), paths[idx]);
         return;
       }
       if (ev.key === "Escape") {
-        setSelection(new Set());
-        setAnchor(null);
+        setMenu(null);
+        api.clearSelection(activeId);
         return;
       }
-      if (ev.key === "?" || (ev.shiftKey && ev.key === "/")) {
-        ev.preventDefault();
-        setShowShortcuts((v) => !v);
-        return;
-      }
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === "c" && selection.size) {
-        setClipboard({ mode: "copy", paths: [...selection] });
-        return;
-      }
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === "x" && selection.size) {
-        setClipboard({ mode: "cut", paths: [...selection] });
-        return;
-      }
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === "v") {
-        void ops.paste(clipboard);
-        return;
-      }
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === "a") {
-        ev.preventDefault();
-        setSelection(new Set(sortedEntries.map((e) => e.path)));
-        return;
-      }
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === "Backspace") {
-        void ops.trash([...selection]);
-        return;
-      }
-      if (ev.key === "F2" && anchor) {
-        const e = sortedEntries.find((x) => x.path === anchor);
-        if (e) ops.startRename(e);
-      }
+
+      const combo = eventToCombo(ev);
+      if (!combo) return;
+      const action = keymap.actionFor(combo);
+      if (!action) return;
+      ev.preventDefault();
+      actions[action]();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedEntries, anchor, selection, clipboard, listing, ops, soundSettings]);
+  }, [actions, api, activeId, activeEntries, activeTab, keymap]);
 
-  // ---------- разметка ----------
-  const singleSelection = selection.size === 1 ? [...selection][0] : null;
+  // ---------- контекстное меню ----------
+  const openMenuFor = useCallback(
+    (panelId: string, target: MenuTarget, ev: React.MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      api.setActivePanelId(panelId);
+      setMenu({ x: ev.clientX, y: ev.clientY, panelId, target });
+    },
+    [],
+  );
+
+  const targetPath = menu?.target.kind === "entry" ? menu.target.path : null;
+  const isFavTarget = !!targetPath && favs.isFavorite(targetPath);
+  // Панель, на которой открыто меню: selection/entries берём от неё, а не от
+  // активной — setState из клика ещё не применился в этом рендере.
+  const menuSlice = menu ? api.slice(menu.panelId) : null;
+  const menuSelection = menuSlice?.tab?.selection ?? new Set<string>();
+  const menuSingle = menuSelection.size === 1 ? [...menuSelection][0] : null;
+
+  // ---------- панели ----------
+  const paneIds = api.panels.map((p) => p.id);
+  const currentPath = activeTab?.listing?.path;
 
   return (
-    <div className="fm">
-      <Sidebar places={places} disks={disks} currentPath={listing?.path} t={t} onGo={go} />
+    <div className={"fm" + (api.dualPane ? " dual" : "")}>
+      <Sidebar
+        places={places}
+        disks={disks}
+        favorites={favs.favorites}
+        currentPath={currentPath}
+        t={t}
+        onGo={(path) => api.go(activeId, path)}
+        onRemoveFavorite={favs.removeFavorite}
+      />
 
       <main className="main">
-        <Toolbar
-          t={t}
-          crumbs={crumbs}
-          canBack={histIdx > 0}
-          canForward={histIdx < history.length - 1}
-          canUp={!!listing?.parent}
-          query={query}
-          showHidden={showHidden}
-          newMenu={newMenu}
-          onBack={goBack}
-          onForward={goForward}
-          onUp={goUp}
-          onGo={go}
-          onQueryChange={setQuery}
-          onSearch={doSearch}
-          onClearSearch={() => {
-            setQuery("");
-            setSearchResults(null);
-          }}
-          onToggleNewMenu={() => setNewMenu((v) => !v)}
-          onNewFolder={() => {
-            setNewMenu(false);
-            setDialog({ kind: "dir", value: t.defaultFolderName });
-          }}
-          onNewFile={(ext) => {
-            setNewMenu(false);
-            setDialog({
-              kind: "file",
-              value: ext ? `${t.defaultFileName}.${ext}` : `${t.defaultFileName}.txt`,
-            });
-          }}
-          onToggleHidden={() => setShowHidden((v) => !v)}
-          onRefresh={refresh}
-          onOpenSettings={() => setShowSettings(true)}
-          onOpenShortcuts={() => setShowShortcuts(true)}
-        />
-
-        {listing && (
-          <div className="path-bar">
-            <span className="path-text">{listing.path}</span>
-            {selection.size > 0 && (
-              <span className="sel-info">
-                {t.selected} {selection.size}
-                {totalSize > 0 ? ` · ${fmtSize(totalSize)}` : ""}
-              </span>
-            )}
-            {searchResults !== null && (
-              <span className="sel-info">
-                {t.found} {searchResults.length}
-              </span>
-            )}
-          </div>
-        )}
-
-        {error && (
-          <div className="error" onClick={() => setError(null)}>
-            {error} <span className="err-x">✕</span>
-          </div>
-        )}
-
-        <FileList
-          t={t}
-          entries={sortedEntries}
-          selection={selection}
-          renaming={renaming}
-          renameValue={renameValue}
-          loading={loading}
-          error={error}
-          sortKey={sortKey}
-          sortDir={sortDir}
-          onSort={toggleSort}
-          onClickEntry={clickEntry}
-          onOpenEntry={openEntry}
-          onContextEntry={(e) => {
-            if (!selection.has(e.path)) {
-              setSelection(new Set([e.path]));
-              setAnchor(e.path);
-            }
-          }}
-          onRenameValue={setRenameValue}
-          onCommitRename={(p, name) => void ops.rename(p, name)}
-          onCancelRename={() => setRenaming(null)}
-          onEmptyClick={onEmptyClick}
-          listRef={listRef}
-        />
-
-        <ActionBar
-          t={t}
-          selectionSize={selection.size}
-          totalSize={totalSize}
-          clipboard={clipboard}
-          fmtSize={fmtSize}
-          onCopy={() => setClipboard({ mode: "copy", paths: [...selection] })}
-          onCut={() => setClipboard({ mode: "cut", paths: [...selection] })}
-          onTrash={() => void ops.trash([...selection])}
-          onRename={() => {
-            if (!singleSelection) return;
-            const e = sortedEntries.find((x) => x.path === singleSelection);
-            if (e) ops.startRename(e);
-          }}
-          onReveal={() => {
-            if (singleSelection) void invoke("reveal_path", { path: singleSelection });
-          }}
-          onPaste={() => void ops.paste(clipboard)}
-        />
+        <div className="panes">
+        {paneIds.map((pid) => {
+          const { panel, tab, entries } = api.slice(pid);
+          if (!panel || !tab) return null;
+          const paneActive = pid === activeId;
+          return (
+            <Panel
+              key={pid}
+              t={t}
+              panel={panel}
+              tab={tab}
+              entries={entries}
+              active={paneActive}
+              viewMode={prefs.viewMode}
+              showHidden={prefs.showHidden}
+              newMenu={newMenuPane === pid}
+              clipboard={clipboard}
+              renaming={ops.renaming}
+              renameValue={ops.renameValue}
+              onFocus={() => api.setActivePanelId(pid)}
+              onSelectTab={(id) => api.selectTab(pid, id)}
+              onCloseTab={(id) => api.closeTab(pid, id)}
+              onNewTab={() => api.addTab(pid, tab.listing?.path)}
+              onBack={() => api.goBack(pid)}
+              onForward={() => api.goForward(pid)}
+              onUp={() => api.goUp(pid)}
+              onGo={(path) => api.go(pid, path)}
+              onQueryChange={(v) => api.setQuery(pid, v)}
+              onSearch={() => void api.search(pid, tab.query)}
+              onClearSearch={() => {
+                api.setQuery(pid, "");
+                void api.search(pid, "");
+              }}
+              onToggleNewMenu={() => setNewMenuPane((cur) => (cur === pid ? null : pid))}
+              onNewFolder={() => {
+                setNewMenuPane(null);
+                api.setActivePanelId(pid);
+                ops.setDialog({ kind: "dir", value: t.defaultFolderName });
+              }}
+              onNewFile={(ext) => {
+                setNewMenuPane(null);
+                api.setActivePanelId(pid);
+                ops.setDialog({
+                  kind: "file",
+                  value: ext ? `${t.defaultFileName}.${ext}` : `${t.defaultFileName}.txt`,
+                });
+              }}
+              onToggleHidden={() => updatePrefs({ showHidden: !prefs.showHidden })}
+              onRefresh={() => api.refresh(pid)}
+              onOpenSettings={() => setShowSettings(true)}
+              onOpenShortcuts={() => setShowShortcuts(true)}
+              onSort={(k) => api.setSort(pid, k)}
+              onClickEntry={(e, ev, list) => api.clickEntry(pid, e, ev, list)}
+              onOpenEntry={(e) => {
+                api.setActivePanelId(pid);
+                openEntry(e);
+              }}
+              onContextEntry={(e, ev) => {
+                if (!tab.selection.has(e.path)) {
+                  api.setSelection(pid, new Set([e.path]), e.path);
+                }
+                openMenuFor(pid, { kind: "entry", path: e.path, isDir: e.is_dir }, ev);
+              }}
+              onContextEmpty={(ev) => openMenuFor(pid, { kind: "empty" }, ev)}
+              onRenameValue={ops.setRenameValue}
+              onCommitRename={(p, name) => void ops.rename(p, name)}
+              onCancelRename={() => ops.setRenaming(null)}
+              onClearSelection={() => api.clearSelection(pid)}
+              onClearError={() => api.setError(pid, null)}
+              onCopy={() => setClipboard({ mode: "copy", paths: [...tab.selection] })}
+              onCut={() => setClipboard({ mode: "cut", paths: [...tab.selection] })}
+              onTrash={() => void ops.trash([...tab.selection])}
+              onRename={() => {
+                const sel = [...tab.selection];
+                if (sel.length !== 1) return;
+                const e = entries.find((x) => x.path === sel[0]);
+                if (e) ops.startRename(e);
+              }}
+              onReveal={() => {
+                const sel = [...tab.selection];
+                if (sel.length === 1) void invoke("reveal_path", { path: sel[0] });
+              }}
+              onPaste={() => void ops.paste(clipboard)}
+            />
+          );
+        })}
+        </div>
 
         {dropActive && (
           <div className="drop-overlay">
@@ -434,23 +412,80 @@ export default function App() {
             <kbd>↑↓</kbd> {t.scUp}
           </span>
           <span className="bh-item">
-            <kbd>{t.scAddKey}</kbd> {t.scAdd}
+            <kbd>{prettyCombo(keymap.keys.newTab)}</kbd> {t.newTab}
           </span>
           <span className="bh-item">
-            <kbd>{t.scRangeKey}</kbd> {t.scRange}
+            <kbd>{prettyCombo(keymap.keys.trash)}</kbd> {t.scTrash}
           </span>
           <span className="bh-item">
-            <kbd>⌘A</kbd> {t.scAll}
+            <kbd>{prettyCombo(keymap.keys.help)}</kbd> {t.scHelp}
           </span>
-          <span className="bh-item">
-            <kbd>⌘⌫</kbd> {t.scTrash}
-          </span>
-          <span className="bh-item">
-            <kbd>?</kbd> {t.scHelp}
-          </span>
+          <button className="bh-link" onClick={() => setShowKeymap(true)}>
+            {t.shortcutsConfig}
+          </button>
         </div>
 
-        {showShortcuts && <ShortcutsModal t={t} onClose={() => setShowShortcuts(false)} />}
+        {menu && (
+          <ContextMenu
+            t={t}
+            x={menu.x}
+            y={menu.y}
+            target={menu.target}
+            selectionSize={menuSelection.size}
+            clipboard={clipboard}
+            isFavorite={isFavTarget}
+            dualPane={api.dualPane}
+            onClose={() => setMenu(null)}
+            onOpen={() => {
+              if (targetPath) {
+                const e = menuSlice?.entries.find((x) => x.path === targetPath);
+                if (e) openEntry(e);
+              }
+            }}
+            onReveal={() => targetPath && void invoke("reveal_path", { path: targetPath })}
+            onRename={() => {
+              if (!menuSingle) return;
+              const e = menuSlice?.entries.find((x) => x.path === menuSingle);
+              if (e) ops.startRename(e);
+            }}
+            onTrash={() => void ops.trash([...menuSelection])}
+            onCopy={() => setClipboard({ mode: "copy", paths: [...menuSelection] })}
+            onCut={() => setClipboard({ mode: "cut", paths: [...menuSelection] })}
+            onPaste={() => void ops.paste(clipboard)}
+            onNewFolder={() => ops.setDialog({ kind: "dir", value: t.defaultFolderName })}
+            onNewFile={() =>
+              ops.setDialog({ kind: "file", value: `${t.defaultFileName}.txt` })
+            }
+            onRefresh={() => api.refresh(activeId)}
+            onToggleFavorite={() => {
+              if (!targetPath) return;
+              if (isFavTarget) favs.removeFavorite(targetPath);
+              else favs.addFavorite(targetPath);
+            }}
+            onOpenInOtherPane={() => {
+              if (!targetPath) return;
+              const other = api.panels.find((p) => p.id !== activeId);
+              if (other) api.go(other.id, targetPath);
+            }}
+            onNewWindow={() => void doNewWindow(targetPath ?? currentPath)}
+            onToggleHidden={() => updatePrefs({ showHidden: !prefs.showHidden })}
+          />
+        )}
+
+        {showShortcuts && (
+          <ShortcutsModal t={t} keys={keymap.keys} onClose={() => setShowShortcuts(false)} />
+        )}
+
+        {showKeymap && (
+          <KeymapModal
+            t={t}
+            keys={keymap.keys}
+            onSet={keymap.setBinding}
+            onReset={keymap.resetBinding}
+            onResetAll={keymap.resetAll}
+            onClose={() => setShowKeymap(false)}
+          />
+        )}
 
         {showSettings && (
           <SettingsModal
@@ -458,6 +493,7 @@ export default function App() {
             langPref={langPref}
             themePref={themePref}
             sounds={soundSettings}
+            viewMode={prefs.viewMode}
             onLangChange={(v) => {
               setLangPref(v);
               localStorage.setItem("kladovka-lang", v);
@@ -467,29 +503,34 @@ export default function App() {
               localStorage.setItem("kladovka-theme", v);
             }}
             onSoundsChange={setSoundSettings}
+            onViewModeChange={(v) => updatePrefs({ viewMode: v })}
+            onOpenKeymap={() => {
+              setShowSettings(false);
+              setShowKeymap(true);
+            }}
             onClose={() => setShowSettings(false)}
           />
         )}
 
-        {conflict && (
+        {ops.conflict && (
           <ConflictDialog
             t={t}
             onChoose={(policy) => {
-              const c = conflict;
-              setConflict(null);
-              void ops.runTransfer(c.mode, c.paths, c.dest, policy);
+              const c = ops.conflict;
+              ops.setConflict(null);
+              if (c) void ops.runTransfer(c.mode, c.paths, c.dest, policy);
             }}
-            onCancel={() => setConflict(null)}
+            onCancel={() => ops.setConflict(null)}
           />
         )}
 
-        {dialog && (
+        {ops.dialog && (
           <CreateDialog
             t={t}
-            dialog={dialog}
-            onChange={setDialog}
+            dialog={ops.dialog}
+            onChange={ops.setDialog}
             onCommit={() => void ops.commitCreate()}
-            onCancel={() => setDialog(null)}
+            onCancel={() => ops.setDialog(null)}
           />
         )}
       </main>

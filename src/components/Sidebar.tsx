@@ -1,18 +1,20 @@
-/** Левая панель: места и диски. */
+/** Левая панель: места, диски, избранное. */
 
 import type { Dict } from "../i18n";
 import { fmtSizeWith, placeLabel } from "../format";
-import type { DiskInfo } from "../types";
+import type { DiskInfo, Favorite } from "../types";
 
 type Props = {
   places: DiskInfo[];
   disks: DiskInfo[];
+  favorites: Favorite[];
   currentPath: string | undefined;
   t: Dict;
   onGo: (path: string) => void;
+  onRemoveFavorite: (path: string) => void;
 };
 
-export function Sidebar({ places, disks, currentPath, t, onGo }: Props) {
+export function Sidebar({ places, disks, favorites, currentPath, t, onGo, onRemoveFavorite }: Props) {
   const fmtSize = fmtSizeWith(t);
   return (
     <aside className="sidebar">
@@ -27,6 +29,30 @@ export function Sidebar({ places, disks, currentPath, t, onGo }: Props) {
           {placeLabel(p.label, t)}
         </button>
       ))}
+
+      {favorites.length > 0 && (
+        <>
+          <div className="side-title" style={{ marginTop: 18 }}>
+            {t.favorites}
+          </div>
+          {favorites.map((f) => (
+            <button
+              key={f.path}
+              className={"side-item" + (currentPath === f.path ? " active" : "")}
+              onClick={() => onGo(f.path)}
+              onContextMenu={(ev) => {
+                ev.preventDefault();
+                onRemoveFavorite(f.path);
+              }}
+              title={f.path}
+            >
+              <span className="side-ico">★</span>
+              <span className="disk-name">{f.name}</span>
+            </button>
+          ))}
+        </>
+      )}
+
       <div className="side-title" style={{ marginTop: 18 }}>
         {t.disks}
       </div>

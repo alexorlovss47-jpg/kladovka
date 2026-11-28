@@ -998,3 +998,269 @@ body,
 
 .op-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .op-error { color: #e0706a; }
+
+/* ---------- панели и вкладки (этап 3) ---------- */
+
+.panes {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  border-right: 1px solid var(--line);
+}
+
+.pane:last-child {
+  border-right: none;
+}
+
+.pane.active .list-head {
+  background: var(--bg-2);
+}
+
+.pane:not(.active) .tab-strip {
+  opacity: 0.75;
+}
+
+.tab-strip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px 0;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  flex: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  padding: 5px 8px 5px 10px;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--bg-3);
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 0 3px;
+}
+
+.tab-close:hover {
+  background: var(--hover-line);
+  color: var(--text);
+}
+
+.tab-new {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 15px;
+  padding: 0 7px;
+  border-radius: 5px;
+}
+
+.tab-new:hover {
+  background: var(--bg-3);
+  color: var(--accent);
+}
+
+/* ---------- сетка ---------- */
+
+.list.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 4px;
+  align-content: start;
+  padding: 8px;
+}
+
+.list.grid .row.grid-cell {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 10px 6px;
+  text-align: center;
+  min-height: 88px;
+  border: 1px solid transparent;
+}
+
+.list.grid .row.grid-cell .ico {
+  font-size: 26px;
+}
+
+.list.grid .row.grid-cell .name {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.list.grid .row.grid-cell .size {
+  width: auto;
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.list.grid .row.grid-cell.selected {
+  border-color: var(--accent);
+}
+
+/* ---------- компактный ---------- */
+
+.list.compact .row {
+  padding: 2px 8px;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.list.compact .row .ico {
+  font-size: 12px;
+  width: 16px;
+}
+
+/* ---------- контекстное меню ---------- */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 210px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.menu-item.danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+/* ---------- настройка клавиш ---------- */
+
+.keymap-modal {
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.keymap-list {
+  overflow-y: auto;
+  margin: 12px 0;
+  padding-right: 4px;
+}
+
+.keymap-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.keymap-label {
+  flex: 1;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.keymap-key {
+  min-width: 96px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-3);
+  color: var(--text);
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.keymap-key:hover {
+  border-color: var(--accent);
+}
+
+.keymap-key.listening {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.keymap-reset {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+
+.keymap-reset:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.keymap-reset:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* ---------- нижняя подсказка ---------- */
+
+.bh-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.bh-link:hover {
+  text-decoration: underline;
+}
