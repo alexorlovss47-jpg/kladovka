@@ -44,6 +44,7 @@ const LABEL: Record<ActionName, keyof Dict> = {
   refresh: "actionRefresh",
   toggleHidden: "actionToggleHidden",
   togglePreview: "actionTogglePreview",
+  advancedSearch: "actionAdvancedSearch",
 };
 
 export function KeymapModal({ t, keys, onSet, onReset, onResetAll, onClose }: Props) {

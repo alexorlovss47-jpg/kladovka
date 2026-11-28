@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Runtime, State, WebviewUrl, WebviewWindowBuilder
 
 pub mod ops;
 pub mod preview;
+pub mod search;
 
 pub use ops::{Job, OpInfo, OpStatus, OpsState, Signal, MAX_CONCURRENT};
 
@@ -60,7 +61,7 @@ pub struct DiskInfo {
 
 // ---------- утилиты ----------
 
-fn entry_from(path: &Path, meta_is_dir: bool) -> Option<Entry> {
+pub(crate) fn entry_from(path: &Path, meta_is_dir: bool) -> Option<Entry> {
     let name = path.file_name()?.to_string_lossy().to_string();
     let meta = fs::symlink_metadata(path).ok();
     let is_symlink = meta.as_ref().map(|m| m.file_type().is_symlink()).unwrap_or(false);
@@ -96,7 +97,7 @@ fn entry_from(path: &Path, meta_is_dir: bool) -> Option<Entry> {
 /// Finder скрыты флагом. Показывать их бессмысленно: это метаданные, а не данные.
 ///
 /// Также отсекаем мусор от Windows и архиваторов.
-fn is_mac_metadata_name(name: &str) -> bool {
+pub(crate) fn is_mac_metadata_name(name: &str) -> bool {
     name.starts_with("._")            // xattr-спутники (ntfs-3g, tar, ditto)
         || name == "System Volume Information"
         || name == "$RECYCLE.BIN"
@@ -880,6 +881,34 @@ async fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- поиск и фильтрация (Этап 5) ----------
+
+#[tauri::command]
+async fn advanced_search(root: String, filter: search::SearchFilter) -> Result<search::SearchResult, String> {
+    let root_path = expand(&root);
+    tokio::task::spawn_blocking(move || search::walk_filtered(&root_path, &filter))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn largest_files(root: String, limit: Option<usize>, include_hidden: Option<bool>) -> Result<Vec<Entry>, String> {
+    let root_path = expand(&root);
+    tokio::task::spawn_blocking(move || {
+        search::largest_files(&root_path, limit.unwrap_or(50).clamp(1, 1000), include_hidden.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn find_duplicates(root: String, limit: Option<usize>) -> Result<Vec<search::DuplicateGroup>, String> {
+    let root_path = expand(&root);
+    tokio::task::spawn_blocking(move || search::find_duplicates(&root_path, limit.unwrap_or(100).clamp(1, 1000)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ---------- предпросмотр файлов (Этап 4) ----------
 
 /// Метаданные для панели быстрого просмотра.
@@ -1171,7 +1200,10 @@ pub fn run() {
             reveal_path,
             new_window,
             preview_info,
-            read_text_preview
+            read_text_preview,
+            advanced_search,
+            largest_files,
+            find_duplicates
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

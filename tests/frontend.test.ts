@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { eventToCombo, prettyCombo, conflictOf, DEFAULT_KEYS } from "../src/hooks/useKeymap.ts";
 import { compareEntries, buildCrumbs, baseName, iconFor } from "../src/format.ts";
 import { fmtSizeWith } from "../src/format.ts";
+import { applyQuickFilter, isFilterActive, DEFAULT_QUICK } from "../src/hooks/useSearch.ts";
 import { dict } from "../src/i18n.ts";
 import type { ActionName, Entry } from "../src/types.ts";
 
@@ -206,4 +207,137 @@ test("крупные размеры не дают NaN", () => {
     assert.ok(!out.includes("NaN"), `NaN на ${n}: ${out}`);
     assert.ok(out.length > 0);
   }
+});
+
+// ---------- фильтрация (этап 5) ----------
+
+const NOW = 1_800_000_000; // фиксированное «сейчас» для детерминизма
+const DAY = 86400;
+
+const mkE = (name: string, opts: Partial<Entry> = {}): Entry => ({
+  name,
+  path: `/x/${name}`,
+  is_dir: false,
+  is_symlink: false,
+  size: 100,
+  modified: NOW - 1000, // свежий
+  extension: name.includes(".") ? name.split(".").pop()!.toLowerCase() : null,
+  is_hidden: false,
+  ...opts,
+});
+
+test("фильтр по расширению не трогает папки", () => {
+  const list = [
+    mkE("a.png"),
+    mkE("b.jpg"),
+    mkE("dir", { is_dir: true, extension: null }),
+  ];
+  const out = applyQuickFilter(list, { ...DEFAULT_QUICK, ext: "png" }, NOW);
+  assert.deepEqual(out.map((e) => e.name), ["a.png"], "папка не имеет типа файла");
+});
+
+test("расширение с точкой и в верхнем регистре", () => {
+  const list = [mkE("a.PNG"), mkE("b.jpg")];
+  assert.deepEqual(
+    applyQuickFilter(list, { ...DEFAULT_QUICK, ext: ".PNG" }, NOW).map((e) => e.name),
+    ["a.PNG"],
+  );
+});
+
+test("фильтр по минимальному размеру", () => {
+  const list = [
+    mkE("small.bin", { size: 100 }),
+    mkE("big.bin", { size: 5000 }),
+  ];
+  const out = applyQuickFilter(list, { ...DEFAULT_QUICK, minSize: 1000 }, NOW);
+  assert.deepEqual(out.map((e) => e.name), ["big.bin"]);
+});
+
+test("фильтр по размеру исключает папки", () => {
+  // Размер каталога неизвестен — показывать его при фильтре по размеру
+  // значило бы противоречить фильтру.
+  const list = [mkE("dir", { is_dir: true, size: null, extension: null }), mkE("f.bin", { size: 5000 })];
+  const out = applyQuickFilter(list, { ...DEFAULT_QUICK, minSize: 1000 }, NOW);
+  assert.deepEqual(out.map((e) => e.name), ["f.bin"]);
+});
+
+test("фильтр по периоду: сутки", () => {
+  const list = [
+    mkE("fresh.txt", { modified: NOW - 3600 }),
+    mkE("old.txt", { modified: NOW - 3 * DAY }),
+  ];
+  assert.deepEqual(
+    applyQuickFilter(list, { ...DEFAULT_QUICK, period: "day" }, NOW).map((e) => e.name),
+    ["fresh.txt"],
+  );
+});
+
+test("фильтр по периоду: неделя включает сутки", () => {
+  const list = [
+    mkE("h.txt", { modified: NOW - 3600 }),
+    mkE("d3.txt", { modified: NOW - 3 * DAY }),
+    mkE("d10.txt", { modified: NOW - 10 * DAY }),
+  ];
+  assert.deepEqual(
+    applyQuickFilter(list, { ...DEFAULT_QUICK, period: "week" }, NOW).map((e) => e.name),
+    ["h.txt", "d3.txt"],
+  );
+});
+
+test("период all не фильтрует по дате", () => {
+  const list = [mkE("ancient.txt", { modified: NOW - 3650 * DAY })];
+  assert.equal(applyQuickFilter(list, DEFAULT_QUICK, NOW).length, 1);
+});
+
+test("фильтр по типу: только файлы / только папки", () => {
+  const list = [mkE("f.txt"), mkE("dir", { is_dir: true, extension: null })];
+  assert.deepEqual(
+    applyQuickFilter(list, { ...DEFAULT_QUICK, kind: "files" }, NOW).map((e) => e.name),
+    ["f.txt"],
+  );
+  assert.deepEqual(
+    applyQuickFilter(list, { ...DEFAULT_QUICK, kind: "dirs" }, NOW).map((e) => e.name),
+    ["dir"],
+  );
+});
+
+test("несколько фильтров одновременно", () => {
+  const list = [
+    mkE("keep.png", { size: 5000, modified: NOW - 3600 }),
+    mkE("small.png", { size: 10, modified: NOW - 3600 }),
+    mkE("old.png", { size: 5000, modified: NOW - 100 * DAY }),
+    mkE("keep.jpg", { size: 5000, modified: NOW - 3600 }),
+  ];
+  const out = applyQuickFilter(
+    list,
+    { ext: "png", minSize: 1000, maxSize: null, period: "day", kind: "files" },
+    NOW,
+  );
+  assert.deepEqual(out.map((e) => e.name), ["keep.png"]);
+});
+
+test("пустой фильтр возвращает всё", () => {
+  const list = [mkE("a.txt"), mkE("b.png"), mkE("d", { is_dir: true, extension: null })];
+  assert.equal(applyQuickFilter(list, DEFAULT_QUICK, NOW).length, 3);
+});
+
+test("фильтр не мутирует исходный массив", () => {
+  const list = [mkE("a.png"), mkE("b.jpg")];
+  const copy = [...list];
+  applyQuickFilter(list, { ...DEFAULT_QUICK, ext: "png" }, NOW);
+  assert.deepEqual(list, copy);
+});
+
+test("isFilterActive различает состояния", () => {
+  assert.equal(isFilterActive(DEFAULT_QUICK), false);
+  assert.equal(isFilterActive({ ...DEFAULT_QUICK, ext: "png" }), true);
+  assert.equal(isFilterActive({ ...DEFAULT_QUICK, minSize: 100 }), true);
+  assert.equal(isFilterActive({ ...DEFAULT_QUICK, period: "day" }), true);
+  assert.equal(isFilterActive({ ...DEFAULT_QUICK, kind: "files" }), true);
+  assert.equal(isFilterActive({ ...DEFAULT_QUICK, ext: "   " }), false, "пробелы не считаются");
+});
+
+test("запись без даты не проходит фильтр по периоду", () => {
+  const list = [mkE("nodate.txt", { modified: null })];
+  assert.equal(applyQuickFilter(list, { ...DEFAULT_QUICK, period: "year" }, NOW).length, 0);
 });

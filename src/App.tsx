@@ -9,6 +9,7 @@ import { useOperations } from "./hooks/useOperations";
 import { useFavorites, usePrefs } from "./hooks/useFavorites";
 import { useKeymap, prettyCombo, eventToCombo } from "./hooks/useKeymap";
 import { usePreview } from "./hooks/usePreview";
+import { useAdvancedSearch, DEFAULT_QUICK } from "./hooks/useSearch";
 import { Sidebar } from "./components/Sidebar";
 import { Panel } from "./components/Panel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
@@ -19,12 +20,15 @@ import { ConflictDialog } from "./components/ConflictDialog";
 import { OperationsPanel } from "./components/OperationsPanel";
 import { ContextMenu, type MenuTarget } from "./components/ContextMenu";
 import { PreviewPane } from "./components/PreviewPane";
+import { SearchDialog } from "./components/SearchDialog";
 import type {
   ActionName,
   ClipboardState,
   DiskInfo,
   Entry,
   ThemePref,
+  QuickFilter,
+  SearchFilter,
 } from "./types";
 import "./App.css";
 
@@ -55,6 +59,21 @@ export default function App() {
   const [showKeymap, setShowKeymap] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>(DEFAULT_QUICK);
+  const [searchFilter, setSearchFilter] = useState<SearchFilter>({
+    query: "",
+    extension: null,
+    min_size: null,
+    max_size: null,
+    modified_after: null,
+    modified_before: null,
+    include_hidden: false,
+    include_dirs: true,
+    include_files: true,
+    max_depth: 20,
+    limit: 500,
+  });
 
   const keymap = useKeymap();
   const favs = useFavorites();
@@ -71,6 +90,7 @@ export default function App() {
     ? (activeEntries.find((e) => e.path === previewTarget) ?? null)
     : null;
   const preview = usePreview(previewTarget, previewOpen);
+  const adv = useAdvancedSearch();
 
   // ---------- операции ----------
   const doRefreshAll = useCallback(() => api.refreshAll(), [api]);
@@ -227,6 +247,7 @@ export default function App() {
       refresh: () => api.refresh(activeId),
       toggleHidden: () => updatePrefs({ showHidden: !prefs.showHidden }),
       togglePreview: () => setPreviewOpen((v) => !v),
+      advancedSearch: () => setSearchOpen(true),
     }),
     [
       api,
@@ -378,6 +399,9 @@ export default function App() {
               onOpenShortcuts={() => setShowShortcuts(true)}
               onTogglePreview={() => setPreviewOpen((v) => !v)}
               previewOpen={previewOpen}
+              quickFilter={quickFilter}
+              onQuickFilterChange={setQuickFilter}
+              onOpenAdvancedSearch={() => setSearchOpen(true)}
               onSort={(k) => api.setSort(pid, k)}
               onClickEntry={(e, ev, list) => api.clickEntry(pid, e, ev, list)}
               onOpenEntry={(e) => {
@@ -511,6 +535,32 @@ export default function App() {
             }}
             onNewWindow={() => void doNewWindow(targetPath ?? currentPath)}
             onToggleHidden={() => updatePrefs({ showHidden: !prefs.showHidden })}
+          />
+        )}
+
+        {searchOpen && activeTab?.listing && (
+          <SearchDialog
+            t={t}
+            root={activeTab.listing.path}
+            filter={searchFilter}
+            result={adv.result}
+            duplicates={adv.duplicates}
+            largest={adv.largest}
+            searching={adv.searching}
+            error={adv.error}
+            onFilterChange={setSearchFilter}
+            onSearch={() => void adv.run(activeTab.listing!.path, searchFilter)}
+            onFindDuplicates={() => void adv.runDuplicates(activeTab.listing!.path)}
+            onFindLargest={() => void adv.runLargest(activeTab.listing!.path)}
+            onClear={adv.clear}
+            onReveal={(p) => void invoke("reveal_path", { path: p })}
+            onGoTo={(p) => {
+              // Перейти в каталог, где лежит найденный файл.
+              const dir = p.slice(0, p.lastIndexOf("/"));
+              setSearchOpen(false);
+              api.go(activeId, dir);
+            }}
+            onClose={() => setSearchOpen(false)}
           />
         )}
 

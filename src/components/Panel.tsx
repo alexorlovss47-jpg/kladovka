@@ -3,11 +3,13 @@
 import { useRef } from "react";
 import type { Dict } from "../i18n";
 import { buildCrumbs, fmtSizeWith } from "../format";
-import type { ClipboardState, Entry, PanelState, TabState, ViewMode } from "../types";
+import type { ClipboardState, Entry, PanelState, QuickFilter, TabState, ViewMode } from "../types";
+import { applyQuickFilter, isFilterActive } from "../hooks/useSearch";
 import { TabStrip } from "./TabStrip";
 import { Toolbar } from "./Toolbar";
 import { FileList } from "./FileList";
 import { ActionBar } from "./ActionBar";
+import { FilterBar } from "./FilterBar";
 
 type Props = {
   t: Dict;
@@ -41,6 +43,9 @@ type Props = {
   onOpenShortcuts: () => void;
   onTogglePreview: () => void;
   previewOpen: boolean;
+  quickFilter: QuickFilter;
+  onQuickFilterChange: (f: QuickFilter) => void;
+  onOpenAdvancedSearch: () => void;
   onSort: (k: TabState["sortKey"]) => void;
   onClickEntry: (e: Entry, ev: React.MouseEvent, list: Entry[]) => void;
   onOpenEntry: (e: Entry) => void;
@@ -91,6 +96,9 @@ export function Panel({
   onOpenShortcuts,
   onTogglePreview,
   previewOpen,
+  quickFilter,
+  onQuickFilterChange,
+  onOpenAdvancedSearch,
   onSort,
   onClickEntry,
   onOpenEntry,
@@ -112,6 +120,8 @@ export function Panel({
   const fmtSize = fmtSizeWith(t);
 
   const crumbs = buildCrumbs(tab.listing?.path);
+  // Фильтр применяется к тому, что уже загружено: без запросов, мгновенно.
+  const visible = isFilterActive(quickFilter) ? applyQuickFilter(entries, quickFilter) : entries;
   const selection = tab.selection;
   const totalSize = entries
     .filter((e) => selection.has(e.path) && e.size !== null)
@@ -177,6 +187,15 @@ export function Panel({
         </div>
       )}
 
+      <FilterBar
+        t={t}
+        filter={quickFilter}
+        total={entries.length}
+        shown={visible.length}
+        onChange={onQuickFilterChange}
+        onOpenAdvanced={onOpenAdvancedSearch}
+      />
+
       {tab.error && (
         <div className="error" onClick={onClearError}>
           {tab.error} <span className="err-x">✕</span>
@@ -185,7 +204,7 @@ export function Panel({
 
       <FileList
         t={t}
-        entries={entries}
+        entries={visible}
         selection={selection}
         renaming={renaming}
         renameValue={renameValue}
@@ -195,7 +214,7 @@ export function Panel({
         sortDir={tab.sortDir}
         viewMode={viewMode}
         onSort={onSort}
-        onClickEntry={(e, ev) => onClickEntry(e, ev, entries)}
+        onClickEntry={(e, ev) => onClickEntry(e, ev, visible)}
         onOpenEntry={onOpenEntry}
         onContextEntry={onContextEntry}
         onContextEmpty={onContextEmpty}

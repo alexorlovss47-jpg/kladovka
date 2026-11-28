@@ -109,7 +109,8 @@ export type ActionName =
   | "help"
   | "refresh"
   | "toggleHidden"
-  | "togglePreview";
+  | "togglePreview"
+  | "advancedSearch";
 
 /** Статус операции в очереди (зеркалит OpStatus из Rust). */
 export type OpStatus = "queued" | "running" | "paused" | "finished" | "failed" | "cancelled";
@@ -155,4 +156,37 @@ export type TextPreview = {
   truncated: boolean;
   bytes_read: number;
   size: number;
+};
+
+/** Фильтр поиска (зеркалит SearchFilter из search.rs). */
+export type SearchFilter = {
+  query: string;
+  extension: string | null;
+  min_size: number | null;
+  max_size: number | null;
+  modified_after: number | null;
+  modified_before: number | null;
+  include_hidden: boolean;
+  include_dirs: boolean;
+  include_files: boolean;
+  max_depth: number;
+  limit: number;
+};
+
+export type SearchResult = {
+  entries: Entry[];
+  truncated: boolean;
+  scanned: number;
+};
+
+/** Группа дубликатов. */
+export type DuplicateGroup = { size: number; entries: Entry[] };
+
+/** Быстрые фильтры поверх текущего каталога (без обхода дерева). */
+export type QuickFilter = {
+  ext: string;
+  minSize: number | null;
+  maxSize: number | null;
+  period: "all" | "day" | "week" | "month" | "year";
+  kind: "all" | "files" | "dirs";
 };
