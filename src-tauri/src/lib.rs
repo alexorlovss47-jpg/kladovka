@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs::File;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
@@ -275,86 +277,250 @@ async fn disk_info() -> Vec<DiskInfo> {
 
 // ---------- файловые операции ----------
 
-fn unique_dest(dest: &Path) -> PathBuf {
-    if !dest.exists() {
-        return dest.to_path_buf();
+/// Политика поведения при совпадении имени в приёмнике.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictPolicy {
+    /// Добавить числовой суффикс: `file 1.txt` (поведение по умолчанию).
+    #[default]
+    Rename,
+    /// Пропустить существующий файл, не трогать.
+    Skip,
+    /// Заменить существующий (только после успешного копирования во временный файл).
+    Overwrite,
+}
+
+enum Resolved {
+    Use(PathBuf),
+    Skip,
+}
+
+/// Разрешить имя в приёмнике с учётом политики конфликтов.
+///
+/// `symlink_metadata` вместо `exists()`: битый симлинк — это тоже занятое имя.
+fn resolve_target(dest: PathBuf, policy: ConflictPolicy) -> Resolved {
+    if fs::symlink_metadata(&dest).is_err() {
+        return Resolved::Use(dest);
     }
+    match policy {
+        ConflictPolicy::Skip => Resolved::Skip,
+        ConflictPolicy::Overwrite => Resolved::Use(dest),
+        ConflictPolicy::Rename => Resolved::Use(unique_dest(&dest)),
+    }
+}
+
+fn unique_dest(dest: &Path) -> PathBuf {
     let parent = dest.parent().unwrap_or(Path::new("/"));
     let stem = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let ext = dest.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     for i in 1..10000 {
         let candidate = parent.join(format!("{stem} {i}{ext}"));
-        if !candidate.exists() {
+        if fs::symlink_metadata(&candidate).is_err() {
             return candidate;
         }
     }
     dest.to_path_buf()
 }
 
-fn copy_with_progress(
-    src: &Path,
-    dst: &Path,
-    app: &AppHandle,
-    op_id: u64,
-    done: &mut u64,
-    total: u64,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
-    use std::io::{Read, Write};
-    if cancel.load(Ordering::Relaxed) {
-        return Err("отменено".into());
+/// Нормализовать путь для сравнения на вложенность (без обращения к диску).
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
     }
-    if src.is_dir() {
-        fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-        for item in fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
-            let name = item.file_name();
-            copy_with_progress(&item.path(), &dst.join(name), app, op_id, done, total, cancel)?;
+    out
+}
+
+/// Канонизировать как можно глубже: разрешить существующего предка, остаток
+/// приклеить как есть.
+///
+/// Простой `canonicalize().unwrap_or(normalize())` ломает сравнение на macOS:
+/// `/var` — симлинк на `/private/var`, поэтому существующий источник
+/// канонизируется в `/private/var/...`, а ещё не созданный приёмник остаётся
+/// `/var/...` и сравнение «внутри ли» даёт ложный отрицательный результат.
+fn canonicalish(path: &Path) -> PathBuf {
+    if let Ok(c) = fs::canonicalize(path) {
+        return c;
+    }
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path.to_path_buf();
+    loop {
+        if let Some(name) = cur.file_name() {
+            rest.push(name.to_os_string());
         }
-    } else {
-        let mut r = fs::File::open(src).map_err(|e| e.to_string())?;
-        let mut w = fs::File::create(dst).map_err(|e| e.to_string())?;
-        let mut buf = vec![0u8; 256 * 1024];
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                let _ = fs::remove_file(dst);
-                return Err("отменено".into());
-            }
-            let n = r.read(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            w.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            *done += n as u64;
-            let _ = app.emit(
-                "op-progress",
-                OpProgress {
-                    op_id,
-                    kind: "copy".into(),
-                    done: *done,
-                    total,
-                    current: src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                    finished: false,
-                    error: None,
-                },
-            );
+        if !cur.pop() {
+            return normalize(path);
         }
-        if let Ok(meta) = fs::metadata(src) {
-            if let Ok(t) = meta.modified() {
-                if let Ok(f) = fs::File::options().write(true).open(dst) {
-                    let _ = f.set_modified(t);
-                }
+        if let Ok(mut c) = fs::canonicalize(&cur) {
+            for part in rest.into_iter().rev() {
+                c.push(part);
             }
+            return c;
         }
+    }
+}
+
+/// Проверка: приёмник не лежит внутри источника.
+///
+/// Без неё копирование каталога в собственный подкаталог уходит в бесконечный
+/// рост: каждый новый проход видит файлы, созданные предыдущим.
+fn ensure_not_inside_source(src: &Path, dest_dir: &Path) -> Result<(), String> {
+    let meta = fs::symlink_metadata(src).map_err(|e| format!("{}: {}", src.display(), e))?;
+    // Симлинк на каталог копируется как ссылка, рекурсии нет — проверка не нужна.
+    if !meta.is_dir() {
+        return Ok(());
+    }
+    let src_c = canonicalish(src);
+    let dest_c = canonicalish(dest_dir);
+    if dest_c == src_c || dest_c.starts_with(&src_c) {
+        return Err("нельзя копировать каталог внутрь самого себя".into());
     }
     Ok(())
 }
 
-fn count_bytes(path: &Path) -> u64 {
-    if path.is_dir() {
-        fs::read_dir(path).map(|rd| rd.flatten().map(|i| count_bytes(&i.path())).sum()).unwrap_or(0)
-    } else {
-        fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+/// Создать симлинк с тем же target, что у источника (не разыменовывая).
+fn recreate_symlink(src: &Path, dst: &Path) -> Result<(), String> {
+    let target = fs::read_link(src).map_err(|e| format!("{}: {}", src.display(), e))?;
+    std::os::unix::fs::symlink(&target, dst)
+        .map_err(|e| format!("{}: {}", dst.display(), e))
+}
+
+/// Контекст одной операции: прогресс, отмена, список созданного для отката.
+struct CopyCtx<'a> {
+    /// None — работа без UI-событий (юнит-тесты, внутренние вызовы).
+    app: Option<&'a AppHandle>,
+    op_id: u64,
+    kind: &'a str,
+    total: u64,
+    cancel: &'a AtomicBool,
+    /// Всё, что операция успела создать. При ошибке/отмене удаляется.
+    created: Vec<PathBuf>,
+    done: u64,
+}
+
+impl CopyCtx<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
     }
+
+    fn emit(&self, current: &str) {
+        let Some(app) = self.app else { return };
+        let _ = app.emit(
+            "op-progress",
+            OpProgress {
+                op_id: self.op_id,
+                kind: self.kind.to_string(),
+                done: self.done,
+                total: self.total,
+                current: current.to_string(),
+                finished: false,
+                error: None,
+            },
+        );
+    }
+
+    /// Откатить всё созданное (обратный порядок: сначала файлы, потом каталоги).
+    fn rollback(&mut self) {
+        for p in self.created.drain(..).rev() {
+            let _ = fs::remove_file(&p).or_else(|_| fs::remove_dir_all(&p));
+        }
+        self.done = 0;
+    }
+}
+
+/// Скопировать файл через временный файл рядом с целью.
+///
+/// Запись напрямую в `dst` означала бы порчу существующего файла при ошибке
+/// на середине. Временный файл переименовывается только после полной записи.
+fn copy_file_atomic(
+    src: &Path,
+    dst: &Path,
+    ctx: &mut CopyCtx,
+    meta: &fs::Metadata,
+) -> Result<(), String> {
+    let dir = dst.parent().ok_or_else(|| format!("{}: нет родительского каталога", dst.display()))?;
+    let tmp = dir.join(format!(".kladovka-{}-{}.part", ctx.op_id, ctx.created.len()));
+    let mut r = File::open(src).map_err(|e| format!("{}: {}", src.display(), e))?;
+    let mut w = File::create(&tmp).map_err(|e| format!("{}: {}", tmp.display(), e))?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    loop {
+        if ctx.cancelled() {
+            drop(w);
+            let _ = fs::remove_file(&tmp);
+            return Err("отменено".into());
+        }
+        let n = std::io::Read::read(&mut r, &mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        w.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        ctx.done += n as u64;
+        ctx.emit(&name);
+    }
+    w.flush().map_err(|e| e.to_string())?;
+    drop(w);
+    // Сохранить mtime оригинала.
+    if let Ok(t) = meta.modified() {
+        let _ = File::options().write(true).open(&tmp).and_then(|f| f.set_modified(t));
+    }
+    fs::rename(&tmp, dst).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("{}: {}", dst.display(), e)
+    })?;
+    ctx.created.push(dst.to_path_buf());
+    Ok(())
+}
+
+/// Рекурсивное копирование без следования по симлинкам.
+///
+/// `symlink_metadata` + `file_type().is_dir()` не разыменовывают ссылку, поэтому
+/// цикл `a → b → a` физически не может быть пройден: он выглядит как обычный
+/// симлинк и копируется ссылкой.
+fn copy_tree(src: &Path, dst: &Path, ctx: &mut CopyCtx) -> Result<(), String> {
+    if ctx.cancelled() {
+        return Err("отменено".into());
+    }
+    let meta = fs::symlink_metadata(src).map_err(|e| format!("{}: {}", src.display(), e))?;
+    if meta.file_type().is_symlink() {
+        recreate_symlink(src, dst)?;
+        ctx.created.push(dst.to_path_buf());
+        return Ok(());
+    }
+    if meta.is_dir() {
+        fs::create_dir(dst).map_err(|e| format!("{}: {}", dst.display(), e))?;
+        ctx.created.push(dst.to_path_buf());
+        let rd = fs::read_dir(src).map_err(|e| format!("{}: {}", src.display(), e))?;
+        for item in rd.flatten() {
+            copy_tree(&item.path(), &dst.join(item.file_name()), ctx)?;
+        }
+        return Ok(());
+    }
+    copy_file_atomic(src, dst, ctx, &meta)
+}
+
+/// Размер источника без следования по симлинкам.
+fn count_bytes(path: &Path) -> u64 {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    // Симлинк копируется как ссылка — его цель не входит в объём копии.
+    // Считаем только длину самого линка (строки target), как это делает ФС.
+    if meta.file_type().is_symlink() {
+        return 0;
+    }
+    if meta.is_dir() {
+        return fs::read_dir(path)
+            .map(|rd| rd.flatten().map(|i| count_bytes(&i.path())).sum())
+            .unwrap_or(0);
+    }
+    meta.len()
 }
 
 #[tauri::command]
@@ -363,40 +529,60 @@ async fn copy_paths(
     state: State<'_, AppState>,
     sources: Vec<String>,
     dest_dir: String,
+    conflict: Option<ConflictPolicy>,
 ) -> Result<u64, String> {
+    let policy = conflict.unwrap_or_default();
     let op_id = state.next_op.fetch_add(1, Ordering::SeqCst);
-    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
     state.cancels.lock().unwrap().insert(op_id, cancel.clone());
 
     let dest = expand(&dest_dir);
     let srcs: Vec<PathBuf> = sources.iter().map(|s| expand(s)).collect();
     let app2 = app.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        // Проверить все источники ДО начала работы: лучше отказать целиком,
+        // чем скопировать половину и упасть на втором.
+        for src in &srcs {
+            ensure_not_inside_source(src, &dest)?;
+        }
         let total: u64 = srcs.iter().map(|p| count_bytes(p)).sum();
-        let mut done = 0u64;
+        let mut ctx = CopyCtx {
+            app: Some(&app2),
+            op_id,
+            kind: "copy",
+            total,
+            cancel: &cancel,
+            created: Vec::new(),
+            done: 0,
+        };
         let mut final_err = None;
         for src in &srcs {
-            let name = match src.file_name() {
-                Some(n) => n,
-                None => {
-                    final_err = Some("неверный путь".into());
-                    break;
-                }
+            let Some(name) = src.file_name() else {
+                final_err = Some("неверный путь".to_string());
+                break;
             };
-            let target = unique_dest(&dest.join(name));
-            if let Err(e) = copy_with_progress(src, &target, &app2, op_id, &mut done, total, &cancel) {
+            let target = match resolve_target(dest.join(name), policy) {
+                Resolved::Use(t) => t,
+                Resolved::Skip => continue,
+            };
+            if let Err(e) = copy_tree(src, &target, &mut ctx) {
                 final_err = Some(e);
                 break;
             }
+        }
+        // Ошибка или отмена: убрать всё, что успели создать, чтобы не оставлять
+        // пользователю «половину копии», выглядящую как успешный результат.
+        if final_err.is_some() {
+            ctx.rollback();
         }
         let _ = app2.emit(
             "op-progress",
             OpProgress {
                 op_id,
                 kind: "copy".into(),
-                done,
-                total,
+                done: ctx.done,
+                total: ctx.total,
                 current: String::new(),
                 finished: true,
                 error: final_err.clone(),
@@ -408,8 +594,12 @@ async fn copy_paths(
         }
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map(|_| op_id)
+    .map_err(|e| e.to_string())?;
+
+    // Запись в cancels нужна только пока операция жива — иначе HashMap растёт
+    // на каждой операции и течёт всю сессию.
+    state.cancels.lock().unwrap().remove(&op_id);
+    result.map(|_| op_id)
 }
 
 #[tauri::command]
@@ -418,64 +608,71 @@ async fn move_paths(
     state: State<'_, AppState>,
     sources: Vec<String>,
     dest_dir: String,
+    conflict: Option<ConflictPolicy>,
 ) -> Result<u64, String> {
+    let policy = conflict.unwrap_or_default();
     let op_id = state.next_op.fetch_add(1, Ordering::SeqCst);
-    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
     state.cancels.lock().unwrap().insert(op_id, cancel.clone());
 
     let dest = expand(&dest_dir);
     let srcs: Vec<PathBuf> = sources.iter().map(|s| expand(s)).collect();
     let app2 = app.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        for src in &srcs {
+            ensure_not_inside_source(src, &dest)?;
+        }
         let total: u64 = srcs.iter().map(|p| count_bytes(p)).sum();
-        let mut done = 0u64;
+        let mut ctx = CopyCtx {
+            app: Some(&app2),
+            op_id,
+            kind: "move",
+            total,
+            cancel: &cancel,
+            created: Vec::new(),
+            done: 0,
+        };
         let mut final_err = None;
         for src in &srcs {
-            if cancel.load(Ordering::Relaxed) {
-                final_err = Some("отменено".into());
+            if ctx.cancelled() {
+                final_err = Some("отменено".to_string());
                 break;
             }
-            let name = match src.file_name() {
-                Some(n) => n,
-                None => {
-                    final_err = Some("неверный путь".into());
-                    break;
-                }
+            let Some(name) = src.file_name() else {
+                final_err = Some("неверный путь".to_string());
+                break;
             };
-            let target = unique_dest(&dest.join(name));
-            if fs::rename(&src, &target).is_err() {
-                if let Err(e) = copy_with_progress(&src, &target, &app2, op_id, &mut done, total, &cancel) {
+            let target = match resolve_target(dest.join(name), policy) {
+                Resolved::Use(t) => t,
+                Resolved::Skip => continue,
+            };
+            // Быстрый путь: rename в пределах одной ФС. Внешний диск — через копию.
+            if fs::rename(src, &target).is_err() {
+                if let Err(e) = copy_tree(src, &target, &mut ctx) {
                     final_err = Some(e);
                     break;
                 }
-                if let Err(e) = fs::remove_dir_all(&src).or_else(|_| fs::remove_file(&src)) {
+                // Источник удаляем только после успешной полной копии.
+                if let Err(e) = fs::remove_dir_all(src).or_else(|_| fs::remove_file(src)) {
                     final_err = Some(e.to_string());
                     break;
                 }
             } else {
-                done += count_bytes(&target);
+                ctx.done += count_bytes(&target);
             }
-            let _ = app2.emit(
-                "op-progress",
-                OpProgress {
-                    op_id,
-                    kind: "move".into(),
-                    done,
-                    total,
-                    current: src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                    finished: false,
-                    error: None,
-                },
-            );
+            ctx.emit(&name.to_string_lossy());
+        }
+        if final_err.is_some() {
+            ctx.rollback();
         }
         let _ = app2.emit(
             "op-progress",
             OpProgress {
                 op_id,
                 kind: "move".into(),
-                done,
-                total,
+                done: ctx.done,
+                total: ctx.total,
                 current: String::new(),
                 finished: true,
                 error: final_err.clone(),
@@ -487,8 +684,10 @@ async fn move_paths(
         }
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map(|_| op_id)
+    .map_err(|e| e.to_string())?;
+
+    state.cancels.lock().unwrap().remove(&op_id);
+    result.map(|_| op_id)
 }
 
 /// Удаление в Корзину через Finder (нативно, восстановимо).
@@ -514,7 +713,12 @@ async fn trash_paths(paths: Vec<String>) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+/// Безвозвратное удаление (минуя Корзину).
+///
+/// Оставлено только для внутренних нужд (откат, очистка `.part`), но снято с
+/// регистрации Tauri: невосстановимое удаление не должно быть доступно из UI,
+/// где ожидается поведение Корзины. Файл можно вернуть через Корзину.
+#[allow(dead_code)]
 async fn delete_paths(paths: Vec<String>) -> Result<(), String> {
     for p in paths {
         let path = expand(&p);
@@ -542,7 +746,10 @@ async fn rename_path(from: String, to_name: String) -> Result<String, String> {
 #[tauri::command]
 async fn create_dir(parent: String, name: String) -> Result<String, String> {
     let p = expand(&parent).join(&name);
-    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    if fs::symlink_metadata(&p).is_ok() {
+        return Err("файл с таким именем уже есть".into());
+    }
+    fs::create_dir(&p).map_err(|e| e.to_string())?;
     Ok(p.to_string_lossy().to_string())
 }
 
@@ -556,18 +763,64 @@ async fn create_file(parent: String, name: String) -> Result<String, String> {
         "docx" => write_min_docx(&p)?,
         "xlsx" => write_min_xlsx(&p)?,
         _ => {
-            fs::File::create(&p).map_err(|e| e.to_string())?;
+            // create_new: не перезаписываем существующий файл (create() усекает).
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&p)
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        "файл с таким именем уже есть".to_string()
+                    } else {
+                        e.to_string()
+                    }
+                })?;
         }
     }
     Ok(p.to_string_lossy().to_string())
 }
 
+/// Создать файл, гарантированно не перезаписывая существующий.
+///
+/// Пишем во временный файл рядом и переименовываем только после успешного
+/// заполнения: `create` усекает существующий файл, а `rename` атомарен и
+/// не оставляет «полускелет» при ошибке на середине.
+fn create_new_file<T>(path: &Path, fill: T) -> Result<(), String>
+where
+    T: FnOnce(&mut File) -> Result<(), String>,
+{
+    if fs::symlink_metadata(path).is_ok() {
+        return Err("файл с таким именем уже есть".into());
+    }
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    let tmp = dir.join(format!(
+        ".kladovka-new-{}.part",
+        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    ));
+    let _ = fs::remove_file(&tmp);
+    let res = (|| -> Result<(), String> {
+        let mut f = File::create(&tmp).map_err(|e| e.to_string())?;
+        fill(&mut f)?;
+        f.flush().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(e) = res {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // Если файл успели создать параллельно — не затираем его.
+    if fs::symlink_metadata(path).is_ok() {
+        let _ = fs::remove_file(&tmp);
+        return Err("файл с таким именем уже есть".into());
+    }
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
 /// Минимальный валидный .docx (пустой документ Word).
 fn write_min_docx(path: &Path) -> Result<(), String> {
-    use std::io::Write as _;
-    let f = fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(f);
-    let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
     let files: [(&str, &str); 4] = [
         (
             "[Content_Types].xml",
@@ -586,20 +839,11 @@ fn write_min_docx(path: &Path) -> Result<(), String> {
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#,
         ),
     ];
-    for (name, body) in files {
-        zip.start_file(name, opts).map_err(|e| e.to_string())?;
-        zip.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
-    }
-    zip.finish().map_err(|e| e.to_string())?;
-    Ok(())
+    create_new_file(path, |f| write_zip(f, &files))
 }
 
 /// Минимальный валидный .xlsx (одна пустая книга).
 fn write_min_xlsx(path: &Path) -> Result<(), String> {
-    use std::io::Write as _;
-    let f = fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(f);
-    let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
     let files: [(&str, &str); 5] = [
         (
             "[Content_Types].xml",
@@ -622,8 +866,15 @@ fn write_min_xlsx(path: &Path) -> Result<(), String> {
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>"#,
         ),
     ];
+    create_new_file(path, |f| write_zip(f, &files))
+}
+
+/// Записать набор файлов в ZIP-контейнер Office.
+fn write_zip<W: Write + std::io::Seek>(w: W, files: &[(&str, &str)]) -> Result<(), String> {
+    let mut zip = zip::ZipWriter::new(w);
+    let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
     for (name, body) in files {
-        zip.start_file(name, opts).map_err(|e| e.to_string())?;
+        zip.start_file(*name, opts).map_err(|e| e.to_string())?;
         zip.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
     }
     zip.finish().map_err(|e| e.to_string())?;
@@ -705,7 +956,6 @@ pub fn run() {
             copy_paths,
             move_paths,
             trash_paths,
-            delete_paths,
             rename_path,
             create_dir,
             create_file,
@@ -716,4 +966,327 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ==================== тесты ====================
+//
+// Покрывают именно те сценарии, которые в v0.1.3 приводили к потере данных
+// или падению: симлинки, циклы, копирование в себя, перезапись при создании,
+// откат частичной копии и утечку карты отмен.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Уникальный временный каталог для одного теста.
+    struct Sandbox(PathBuf);
+
+    impl Sandbox {
+        fn new(tag: &str) -> Self {
+            let mut p = std::env::temp_dir();
+            let uniq = format!(
+                "kladovka-test-{}-{}-{:?}",
+                tag,
+                std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            );
+            p.push(uniq);
+            fs::create_dir_all(&p).unwrap();
+            Sandbox(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+        fn join(&self, s: &str) -> PathBuf {
+            self.0.join(s)
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn ctx<'a>(cancel: &'a AtomicBool, total: u64) -> CopyCtx<'a> {
+        CopyCtx { app: None, op_id: 1, kind: "copy", total, cancel, created: Vec::new(), done: 0 }
+    }
+
+    #[test]
+    fn symlink_is_copied_as_symlink_not_dereferenced() {
+        let sb = Sandbox::new("symlink");
+        let target_dir = sb.join("target");
+        fs::create_dir_all(target_dir.join("inner")).unwrap();
+        fs::write(target_dir.join("inner/data.txt"), b"payload").unwrap();
+
+        let src_root = sb.join("src");
+        fs::create_dir_all(&src_root).unwrap();
+        std::os::unix::fs::symlink(&target_dir, src_root.join("link_to_dir")).unwrap();
+        fs::write(src_root.join("real.txt"), b"real").unwrap();
+
+        let dst_root = sb.join("dst");
+        let cancel = AtomicBool::new(false);
+        let mut c = ctx(&cancel, 0);
+        copy_tree(&src_root, &dst_root, &mut c).unwrap();
+
+        let copied_link = dst_root.join("link_to_dir");
+        let meta = fs::symlink_metadata(&copied_link).unwrap();
+        assert!(meta.file_type().is_symlink(), "симлинк должен остаться симлинком");
+        // Цель не скопирована физически: в приёмнике ровно два элемента —
+        // сам линк и real.txt. Проход по ссылке ведёт в оригинальный каталог,
+        // поэтому проверять «не читается ли data.txt» бессмысленно.
+        let names: Vec<String> = fs::read_dir(&dst_root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names.len(), 2, "в приёмнике лишние файлы: {names:?}");
+        assert!(!names.iter().any(|n| n == "inner"), "каталог цели скопирован физически");
+        assert_eq!(fs::read_link(&copied_link).unwrap(), target_dir);
+        assert_eq!(fs::read(dst_root.join("real.txt")).unwrap(), b"real");
+    }
+
+    #[test]
+    fn symlink_cycle_does_not_overflow_stack() {
+        let sb = Sandbox::new("cycle");
+        let a = sb.join("a");
+        let b = sb.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("file.txt"), b"x").unwrap();
+        // a/loop -> b, b/loop -> a : классический цикл
+        std::os::unix::fs::symlink(&b, a.join("loop")).unwrap();
+        std::os::unix::fs::symlink(&a, b.join("loop")).unwrap();
+
+        let dst = sb.join("copy");
+        let cancel = AtomicBool::new(false);
+        let mut c = ctx(&cancel, 0);
+        // Главное — не падаем по stack overflow.
+        copy_tree(&a, &dst, &mut c).unwrap();
+        assert!(dst.join("file.txt").exists());
+        assert!(fs::symlink_metadata(dst.join("loop")).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn copy_into_own_subdir_is_rejected() {
+        let sb = Sandbox::new("inside");
+        let src = sb.join("root");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("f.txt"), b"data").unwrap();
+
+        // Источник == приёмник
+        assert!(ensure_not_inside_source(&src, &src).is_err());
+        // Приёмник — подкаталог источника
+        assert!(ensure_not_inside_source(&src, &src.join("nested")).is_err());
+        // Глубже
+        assert!(ensure_not_inside_source(&src, &src.join("nested/deep")).is_err());
+        // Соседний каталог — можно
+        assert!(ensure_not_inside_source(&src, &sb.join("other")).is_ok());
+        // Родитель источника — можно (копирование вверх не рекурсивно)
+        assert!(ensure_not_inside_source(&src, &sb.0).is_ok());
+    }
+
+    #[test]
+    fn copy_into_self_does_not_grow_tree() {
+        let sb = Sandbox::new("selfgrow");
+        let src = sb.join("root");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("big.txt"), vec![7u8; 8192]).unwrap();
+
+        // Прямая попытка копирования внутрь себя отсекается до начала работы.
+        assert!(ensure_not_inside_source(&src, &src.join("sub")).is_err());
+        // Дерево не изменилось.
+        assert_eq!(fs::read_dir(&src).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn create_file_does_not_overwrite_existing() {
+        let sb = Sandbox::new("overwrite");
+        let existing = sb.join("note.txt");
+        fs::write(&existing, b"original contents").unwrap();
+
+        let err = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&existing)
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&existing).unwrap(), b"original contents");
+
+        // Через helper тоже не перезаписываем.
+        let e2 = create_new_file(&existing, |f| {
+            f.write_all(b"nope").map_err(|e| e.to_string())
+        })
+        .unwrap_err();
+        assert_eq!(e2, "файл с таким именем уже есть");
+        assert_eq!(fs::read(&existing).unwrap(), b"original contents");
+    }
+
+    #[test]
+    fn create_new_file_writes_when_absent() {
+        let sb = Sandbox::new("createok");
+        let p = sb.join("fresh.txt");
+        create_new_file(&p, |f| f.write_all(b"hello").map_err(|e| e.to_string())).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"hello");
+        // Временных файлов не осталось.
+        let leftovers: Vec<_> = fs::read_dir(sb.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "остались временные файлы");
+    }
+
+    #[test]
+    fn conflict_policies_resolve_as_documented() {
+        let sb = Sandbox::new("conflict");
+        let taken = sb.join("report.txt");
+        fs::write(&taken, b"old").unwrap();
+
+        // Rename — добавляет суффикс.
+        match resolve_target(taken.clone(), ConflictPolicy::Rename) {
+            Resolved::Use(p) => assert_eq!(p.file_name().unwrap().to_string_lossy(), "report 1.txt"),
+            Resolved::Skip => panic!("ожидалось переименование"),
+        }
+        // Skip — пропускает.
+        assert!(matches!(resolve_target(taken.clone(), ConflictPolicy::Skip), Resolved::Skip));
+        // Overwrite — оставляет имя как есть.
+        match resolve_target(taken.clone(), ConflictPolicy::Overwrite) {
+            Resolved::Use(p) => assert_eq!(p, taken),
+            Resolved::Skip => panic!("ожидалась замена"),
+        }
+        // Свободное имя проходит без изменений при любой политике.
+        let free = sb.join("free.txt");
+        for pol in [ConflictPolicy::Rename, ConflictPolicy::Skip, ConflictPolicy::Overwrite] {
+            match resolve_target(free.clone(), pol) {
+                Resolved::Use(p) => assert_eq!(p, free),
+                Resolved::Skip => panic!("свободное имя не должно пропускаться"),
+            }
+        }
+    }
+
+    #[test]
+    fn broken_symlink_counts_as_taken_name() {
+        let sb = Sandbox::new("broken");
+        let link = sb.join("dangling");
+        std::os::unix::fs::symlink(sb.join("nowhere"), &link).unwrap();
+        // exists() вернул бы false, symlink_metadata — true.
+        assert!(!link.exists());
+        assert!(fs::symlink_metadata(&link).is_ok());
+        match resolve_target(link, ConflictPolicy::Rename) {
+            Resolved::Use(p) => assert!(p.to_string_lossy().contains("dangling 1")),
+            Resolved::Skip => panic!("битый симлинк должен считаться занятым именем"),
+        }
+    }
+
+    #[test]
+    fn cancel_during_copy_rolls_back_created_files() {
+        let sb = Sandbox::new("cancel");
+        let src = sb.join("src");
+        fs::create_dir_all(&src).unwrap();
+        for i in 0..5 {
+            fs::write(src.join(format!("f{i}.bin")), vec![1u8; 200 * 1024]).unwrap();
+        }
+        let dst = sb.join("dst");        // Отмена взведена заранее: копирование не начнётся.
+        let cancel = AtomicBool::new(true);
+        let mut c = ctx(&cancel, 0);
+        let res = copy_tree(&src, &dst, &mut c);
+        assert!(res.is_err());
+        c.rollback();
+        assert!(!dst.exists(), "частичная копия должна быть удалена");
+    }
+
+    #[test]
+    fn rollback_removes_tree_in_reverse_order() {
+        let sb = Sandbox::new("rollback");
+        let dst = sb.join("made");
+        let cancel = AtomicBool::new(false);
+        let mut c = ctx(&cancel, 0);
+        fs::create_dir_all(&dst).unwrap();
+        c.created.push(dst.clone());
+        fs::write(dst.join("x.txt"), b"1").unwrap();
+        c.created.push(dst.join("x.txt"));
+        c.rollback();
+        assert!(!dst.exists());
+        assert!(c.created.is_empty());
+    }
+
+    #[test]
+    fn count_bytes_ignores_symlinks_and_skips_dirs() {
+        let sb = Sandbox::new("count");
+        let root = sb.join("root");
+        fs::create_dir_all(root.join("d")).unwrap();
+        fs::write(root.join("d/a.bin"), vec![0u8; 1000]).unwrap();
+        fs::write(root.join("b.bin"), vec![0u8; 500]).unwrap();
+        std::os::unix::fs::symlink(root.join("b.bin"), root.join("link")).unwrap();
+
+        // 1000 + 500; сама ссылка не добавляет размер цели.
+        assert_eq!(count_bytes(&root), 1500);
+    }
+
+    #[test]
+    fn partial_copy_leaves_no_temp_files_on_error() {
+        let sb = Sandbox::new("tmpclean");
+        let src = sb.join("src.txt");
+        fs::write(&src, vec![3u8; 1024]).unwrap();
+        let dst_dir = sb.join("out");
+        fs::create_dir_all(&dst_dir).unwrap();
+        let dst = dst_dir.join("copy.txt");
+        let cancel = AtomicBool::new(false);
+        let mut c = ctx(&cancel, 0);
+        let meta = fs::symlink_metadata(&src).unwrap();
+        copy_file_atomic(&src, &dst, &mut c, &meta).unwrap();
+        assert_eq!(fs::read(&dst).unwrap().len(), 1024);
+        let parts: Vec<_> = fs::read_dir(&dst_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(parts.is_empty(), "временный .part остался после успешного копирования");
+    }
+
+    #[test]
+    fn move_within_same_fs_preserves_content() {
+        let sb = Sandbox::new("move");
+        let src = sb.join("from.bin");
+        fs::write(&src, vec![9u8; 4096]).unwrap();
+        let dst = sb.join("to.bin");
+        fs::rename(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read(&dst).unwrap(), vec![9u8; 4096]);
+    }
+
+    #[test]
+    fn docx_and_xlsx_skeletons_are_valid_zip() {
+        for (name, maker) in [
+            ("doc.docx", write_min_docx as fn(&Path) -> Result<(), String>),
+            ("sheet.xlsx", write_min_xlsx as fn(&Path) -> Result<(), String>),
+        ] {
+            let sb = Sandbox::new("office");
+            let p = sb.join(name);
+            maker(&p).unwrap();
+            let f = fs::File::open(&p).unwrap();
+            let mut archive = zip::ZipArchive::new(f).unwrap();
+            assert!(archive.len() >= 4, "{name}: слишком мало частей");
+            assert!(archive.by_name("[Content_Types].xml").is_ok());
+        }
+    }
+
+    #[test]
+    fn creating_existing_office_file_does_not_truncate() {
+        let sb = Sandbox::new("officetaken");
+        let p = sb.join("keep.docx");
+        fs::write(&p, b"not really docx but must survive").unwrap();
+        let err = write_min_docx(&p).unwrap_err();
+        assert_eq!(err, "файл с таким именем уже есть");
+        assert_eq!(fs::read(&p).unwrap(), b"not really docx but must survive");
+    }
+
+    #[test]
+    fn normalize_collapses_dot_segments() {
+        assert_eq!(normalize(Path::new("/a/./b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(normalize(Path::new("/a/b")), PathBuf::from("/a/b"));
+    }
 }

@@ -677,6 +677,31 @@ body,
   flex-wrap: nowrap;
 }
 
+/* ---------- конфликты имён ---------- */
+
+.conflict-body {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.conflict-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.conflict-opts .act {
+  width: 100%;
+  text-align: left;
+}
+
+.conflict-warn {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 10px;
+}
+
 /* ---------- горячие клавиши ---------- */
 
 .shortcuts-modal {

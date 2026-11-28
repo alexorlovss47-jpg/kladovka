@@ -120,6 +120,9 @@ export default function App() {
   const [dropActive, setDropActive] = useState(false);
   const [soundSettings, setSoundSettings] = useState<SoundSettings>(() => loadSoundSettings());
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [conflict, setConflict] = useState<{ mode: "copy" | "cut"; paths: string[]; dest: string } | null>(
+    null,
+  );
   const lang: Lang = resolveLang(langPref);
   const t: Dict = dict[lang];
   const fmtSize = fmtSizeWith(t);
@@ -237,7 +240,7 @@ export default function App() {
             const sources = p.paths.filter((s) => s.slice(0, s.lastIndexOf("/")) !== dest);
             if (sources.length) {
               playSound("drop", soundSettings);
-              invoke("copy_paths", { sources, destDir: dest })
+              invoke("copy_paths", { sources, destDir: dest, conflict: "rename" })
                 .then(() => refresh())
                 .catch((e) => setError(String(e)));
             }
@@ -328,17 +331,32 @@ export default function App() {
     } else invoke("open_path", { path: e.path }).catch((err) => setError(String(err)));
   };
 
+  /// Запустить копирование/перемещение с выбранной политикой конфликтов.
+  const runTransfer = useCallback(
+    async (mode: "copy" | "cut", paths: string[], dest: string, policy: "rename" | "skip" | "overwrite") => {
+      const cmd = mode === "cut" ? "move_paths" : "copy_paths";
+      await invoke(cmd, { sources: paths, destDir: dest, conflict: policy });
+      if (mode === "cut") setClipboard(null);
+      refresh();
+    },
+    [refresh],
+  );
+
   const doCopy = async () => {
     if (!clipboard || !listing) return;
     try {
-      if (clipboard.mode === "cut") {
-        await invoke("move_paths", { sources: clipboard.paths, destDir: listing.path });
-        setClipboard(null);
-      } else {
-        await invoke("copy_paths", { sources: clipboard.paths, destDir: listing.path });
+      // Имя может быть занято — спрашиваем политику, а не решаем молча.
+      const taken = clipboard.paths.some((p) => {
+        const name = p.slice(p.lastIndexOf("/") + 1);
+        return entries.some((e) => e.name === name);
+      });
+      if (taken) {
+        setConflict({ mode: clipboard.mode, paths: clipboard.paths, dest: listing.path });
+        return;
       }
-      refresh();
+      await runTransfer(clipboard.mode, clipboard.paths, listing.path, "rename");
     } catch (e) {
+      playSound("error", soundSettings);
       setError(String(e));
     }
   };
@@ -969,6 +987,47 @@ export default function App() {
               <div className="modal-actions">
                 <button className="act primary" onClick={() => setShowSettings(false)}>
                   {t.close}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {conflict && (
+          <div className="modal-backdrop" onClick={() => setConflict(null)}>
+            <div className="modal" onClick={(ev) => ev.stopPropagation()}>
+              <div className="modal-title">{t.conflictTitle}</div>
+              <div className="conflict-body">{t.conflictBody}</div>
+              <div className="conflict-opts">
+                {(
+                  [
+                    ["rename", t.conflictRename, false],
+                    ["skip", t.conflictSkip, false],
+                    ["overwrite", t.conflictOverwrite, true],
+                  ] as const
+                ).map(([policy, label, danger]) => (
+                  <button
+                    key={policy}
+                    className={"act" + (danger ? " danger" : "")}
+                    onClick={async () => {
+                      const c = conflict;
+                      setConflict(null);
+                      try {
+                        await runTransfer(c.mode, c.paths, c.dest, policy);
+                      } catch (e) {
+                        playSound("error", soundSettings);
+                        setError(String(e));
+                      }
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="conflict-warn">{t.conflictOverwriteWarn}</div>
+              <div className="modal-actions">
+                <button className="act" onClick={() => setConflict(null)}>
+                  {t.cancel}
                 </button>
               </div>
             </div>
