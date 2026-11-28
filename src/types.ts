@@ -54,3 +54,24 @@ export type NewItemDialog = { kind: "dir" | "file"; value: string };
 export type Crumb = { label: string; path: string };
 
 export type FileTemplate = { label: string; ext: string; icon: string };
+
+/** Статус операции в очереди (зеркалит OpStatus из Rust). */
+export type OpStatus = "queued" | "running" | "paused" | "finished" | "failed" | "cancelled";
+
+export type OpInfo = {
+  id: number;
+  kind: string;
+  sources: string[];
+  dest_dir: string;
+  status: OpStatus;
+  done: number;
+  total: number;
+  current: string;
+  error: string | null;
+  bytes_per_sec: number;
+  eta_secs: number | null;
+  files_done: number;
+  files_total: number;
+  created_at: number;
+  finished_at: number | null;
+};

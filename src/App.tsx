@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { dict, resolveLang, type Lang, type Dict } from "./i18n";
 import { loadSoundSettings, playSound, type SoundSettings } from "./sounds";
@@ -11,6 +10,7 @@ import {
 } from "./format";
 import { useNavigation } from "./hooks/useNavigation";
 import { useFileOperations } from "./hooks/useFileOperations";
+import { useOperations } from "./hooks/useOperations";
 import { Sidebar } from "./components/Sidebar";
 import { Toolbar } from "./components/Toolbar";
 import { FileList } from "./components/FileList";
@@ -19,11 +19,11 @@ import { ShortcutsModal } from "./components/ShortcutsModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { CreateDialog } from "./components/CreateDialog";
 import { ConflictDialog } from "./components/ConflictDialog";
+import { OperationsPanel } from "./components/OperationsPanel";
 import type {
   ClipboardState,
   DiskInfo,
   Entry,
-  OpProgress,
   SortDir,
   SortKey,
   ThemePref,
@@ -57,7 +57,6 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Entry[] | null>(null);
   const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
-  const [progress, setProgress] = useState<OpProgress | null>(null);
   const [places, setPlaces] = useState<DiskInfo[]>([]);
   const [disks, setDisks] = useState<DiskInfo[]>([]);
   const [dropActive, setDropActive] = useState(false);
@@ -84,6 +83,8 @@ export default function App() {
   });
   const { renaming, setRenaming, renameValue, setRenameValue, dialog, setDialog, conflict, setConflict } =
     ops;
+
+  const operations = useOperations({ sounds: soundSettings, onFinished: refresh });
 
   // ---------- загрузка окружения ----------
   useEffect(() => {
@@ -124,23 +125,6 @@ export default function App() {
     if (listing) void load(listing.path, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHidden]);
-
-  // Прогресс операций + звук завершения.
-  useEffect(() => {
-    const un = listen<OpProgress>("op-progress", (ev) => {
-      setProgress(ev.payload);
-      if (ev.payload.finished) {
-        playSound(ev.payload.error ? "error" : ev.payload.kind === "move" ? "move" : "copy", soundSettings);
-        setTimeout(() => {
-          setProgress(null);
-          if (!ev.payload.error) refresh();
-        }, 600);
-      }
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }, [refresh, soundSettings]);
 
   // Тема: auto -> следует за системой, иначе атрибут на <html>.
   useEffect(() => {
@@ -317,7 +301,6 @@ export default function App() {
 
   // ---------- разметка ----------
   const singleSelection = selection.size === 1 ? [...selection][0] : null;
-  const pct = progress && progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
 
   return (
     <div className="fm">
@@ -436,16 +419,15 @@ export default function App() {
           </div>
         )}
 
-        {progress && (
-          <div className="progress-bar">
-            <div className="progress-fill" style={{ width: `${pct}%` }} />
-            <div className="progress-text">
-              {progress.kind === "copy" ? t.copying : t.moving} {fmtSize(progress.done)}
-              {progress.total > 0 ? ` / ${fmtSize(progress.total)}` : ""}
-              {progress.current ? ` · ${progress.current}` : ""}
-            </div>
-          </div>
-        )}
+        <OperationsPanel
+          t={t}
+          active={operations.active}
+          finished={operations.finished}
+          onPause={operations.pause}
+          onResume={operations.resume}
+          onCancel={operations.cancel}
+          onDismiss={operations.dismiss}
+        />
 
         <div className="bottom-hint">
           <span className="bh-item">

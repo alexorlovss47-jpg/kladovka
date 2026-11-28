@@ -906,3 +906,95 @@ body,
     --scroll: #c3c8d2;
     --scroll-hover: #a6adba;
 }
+
+/* ---------- панель операций ---------- */
+
+.ops-panel {
+  position: absolute;
+  right: 14px;
+  bottom: 44px;
+  width: 340px;
+  max-height: 40vh;
+  overflow: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  padding: 10px;
+  z-index: 40;
+}
+
+.ops-head {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.op {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 8px;
+  margin-bottom: 6px;
+  background: var(--bg);
+}
+
+.op-finished { opacity: 0.62; }
+.op-failed { border-color: #b4544f; }
+.op-paused { border-color: #b08a3e; }
+
+.op-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  margin-bottom: 5px;
+}
+
+.op-kind { font-weight: 600; }
+.op-status { color: var(--text-dim); }
+.op-stat { color: var(--text-dim); font-size: 10.5px; margin-left: auto; }
+
+.op-btns { display: flex; gap: 3px; margin-left: auto; }
+
+.op-btn {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-3);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.op-btn:hover { background: var(--hover-bg); }
+.op-btn.danger:hover { background: #b4544f; border-color: #b4544f; color: #fff; }
+
+.op-track {
+  height: 4px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.op-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
+.op-sub {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.op-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.op-error { color: #e0706a; }

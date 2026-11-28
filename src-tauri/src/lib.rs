@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Emitter, Runtime, State};
+
+pub mod ops;
+
+pub use ops::{Job, OpInfo, OpStatus, OpsState, Signal, MAX_CONCURRENT};
 
 // ---------- модели ----------
 
@@ -55,13 +57,6 @@ pub struct DiskInfo {
     pub ico: String,
 }
 
-#[derive(Default)]
-pub struct AppState {
-    next_op: AtomicU64,
-    /// op_id -> флаг отмены
-    cancels: Mutex<HashMap<u64, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
-}
-
 // ---------- утилиты ----------
 
 fn entry_from(path: &Path, meta_is_dir: bool) -> Option<Entry> {
@@ -108,7 +103,7 @@ fn is_mac_metadata_name(name: &str) -> bool {
         || name == "Thumbs.db"
 }
 
-fn expand(path: &str) -> PathBuf {
+pub fn expand(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
@@ -290,7 +285,7 @@ pub enum ConflictPolicy {
     Overwrite,
 }
 
-enum Resolved {
+pub enum Resolved {
     Use(PathBuf),
     Skip,
 }
@@ -298,7 +293,7 @@ enum Resolved {
 /// Разрешить имя в приёмнике с учётом политики конфликтов.
 ///
 /// `symlink_metadata` вместо `exists()`: битый симлинк — это тоже занятое имя.
-fn resolve_target(dest: PathBuf, policy: ConflictPolicy) -> Resolved {
+pub fn resolve_target(dest: PathBuf, policy: ConflictPolicy) -> Resolved {
     if fs::symlink_metadata(&dest).is_err() {
         return Resolved::Use(dest);
     }
@@ -309,7 +304,7 @@ fn resolve_target(dest: PathBuf, policy: ConflictPolicy) -> Resolved {
     }
 }
 
-fn unique_dest(dest: &Path) -> PathBuf {
+pub fn unique_dest(dest: &Path) -> PathBuf {
     let parent = dest.parent().unwrap_or(Path::new("/"));
     let stem = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let ext = dest.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
@@ -370,7 +365,7 @@ fn canonicalish(path: &Path) -> PathBuf {
 ///
 /// Без неё копирование каталога в собственный подкаталог уходит в бесконечный
 /// рост: каждый новый проход видит файлы, созданные предыдущим.
-fn ensure_not_inside_source(src: &Path, dest_dir: &Path) -> Result<(), String> {
+pub fn ensure_not_inside_source(src: &Path, dest_dir: &Path) -> Result<(), String> {
     let meta = fs::symlink_metadata(src).map_err(|e| format!("{}: {}", src.display(), e))?;
     // Симлинк на каталог копируется как ссылка, рекурсии нет — проверка не нужна.
     if !meta.is_dir() {
@@ -392,19 +387,22 @@ fn recreate_symlink(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 /// Контекст одной операции: прогресс, отмена, список созданного для отката.
-struct CopyCtx<'a> {
+pub struct CopyCtx<'a, R: Runtime = tauri::Wry> {
     /// None — работа без UI-событий (юнит-тесты, внутренние вызовы).
-    app: Option<&'a AppHandle>,
-    op_id: u64,
-    kind: &'a str,
-    total: u64,
-    cancel: &'a AtomicBool,
+    pub app: Option<&'a AppHandle<R>>,
+    pub op_id: u64,
+    pub kind: &'a str,
+    pub total: u64,
+    pub cancel: &'a AtomicBool,
     /// Всё, что операция успела создать. При ошибке/отмене удаляется.
-    created: Vec<PathBuf>,
-    done: u64,
+    pub created: Vec<PathBuf>,
+    pub done: u64,
+    /// Колбэк на каждой записи блока: (суммарно байт, имя файла).
+    /// Возвращает Err для кооперативной отмены/паузы.
+    pub progress_hook: Option<&'a mut dyn FnMut(u64, &str) -> Result<(), String>>,
 }
 
-impl CopyCtx<'_> {
+impl<R: Runtime> CopyCtx<'_, R> {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
@@ -438,10 +436,10 @@ impl CopyCtx<'_> {
 ///
 /// Запись напрямую в `dst` означала бы порчу существующего файла при ошибке
 /// на середине. Временный файл переименовывается только после полной записи.
-fn copy_file_atomic(
+pub fn copy_file_atomic<R: Runtime>(
     src: &Path,
     dst: &Path,
-    ctx: &mut CopyCtx,
+    ctx: &mut CopyCtx<R>,
     meta: &fs::Metadata,
 ) -> Result<(), String> {
     let dir = dst.parent().ok_or_else(|| format!("{}: нет родительского каталога", dst.display()))?;
@@ -463,6 +461,15 @@ fn copy_file_atomic(
         w.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         ctx.done += n as u64;
         ctx.emit(&name);
+        if let Some(hook) = ctx.progress_hook.as_mut() {
+            // Ошибку из хука (отмена/пауза-прерывание) нельзя пробрасывать
+            // через `?`: временный файл остался бы на диске навсегда.
+            if let Err(e) = hook(ctx.done, &name) {
+                drop(w);
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
     }
     w.flush().map_err(|e| e.to_string())?;
     drop(w);
@@ -483,7 +490,7 @@ fn copy_file_atomic(
 /// `symlink_metadata` + `file_type().is_dir()` не разыменовывают ссылку, поэтому
 /// цикл `a → b → a` физически не может быть пройден: он выглядит как обычный
 /// симлинк и копируется ссылкой.
-fn copy_tree(src: &Path, dst: &Path, ctx: &mut CopyCtx) -> Result<(), String> {
+pub fn copy_tree<R: Runtime>(src: &Path, dst: &Path, ctx: &mut CopyCtx<R>) -> Result<(), String> {
     if ctx.cancelled() {
         return Err("отменено".into());
     }
@@ -506,7 +513,7 @@ fn copy_tree(src: &Path, dst: &Path, ctx: &mut CopyCtx) -> Result<(), String> {
 }
 
 /// Размер источника без следования по симлинкам.
-fn count_bytes(path: &Path) -> u64 {
+pub fn count_bytes(path: &Path) -> u64 {
     let Ok(meta) = fs::symlink_metadata(path) else {
         return 0;
     };
@@ -523,171 +530,108 @@ fn count_bytes(path: &Path) -> u64 {
     meta.len()
 }
 
+/// Поставить операцию в очередь и запустить планировщик.
+fn start_transfer(
+    app: &AppHandle,
+    ops: &OpsState,
+    kind: &str,
+    sources: Vec<String>,
+    dest_dir: String,
+    policy: ConflictPolicy,
+) -> Result<u64, String> {
+    if sources.is_empty() {
+        return Err("не выбрано ни одного файла".into());
+    }
+    let id = ops::enqueue(ops, kind, sources, dest_dir, policy);
+    pump(app, ops);
+    Ok(id)
+}
+
+/// Поднять столько воркеров, сколько позволяет лимит параллельности.
+///
+/// Вызывается после постановки в очередь и после завершения каждой операции:
+/// без второго вызова очередь встала бы, когда все слоты заняты.
+fn pump(app: &AppHandle, ops: &OpsState) {
+    while let Some(job) = ops::try_start(ops) {
+        let app2 = app.clone();
+        let state_ptr = ops as *const OpsState as usize;
+        tauri::async_runtime::spawn_blocking(move || {
+            // Указатель валиден: OpsState живёт в managed-состоянии всё время
+            // работы приложения, а воркер завершается раньше, чем оно уедет.
+            let ops: &OpsState = unsafe { &*(state_ptr as *const OpsState) };
+            ops::execute(&app2, ops, job);
+        });
+    }
+}
+
 #[tauri::command]
 async fn copy_paths(
     app: AppHandle,
-    state: State<'_, AppState>,
+    ops: State<'_, OpsState>,
     sources: Vec<String>,
     dest_dir: String,
     conflict: Option<ConflictPolicy>,
 ) -> Result<u64, String> {
-    let policy = conflict.unwrap_or_default();
-    let op_id = state.next_op.fetch_add(1, Ordering::SeqCst);
-    let cancel = std::sync::Arc::new(AtomicBool::new(false));
-    state.cancels.lock().unwrap().insert(op_id, cancel.clone());
-
-    let dest = expand(&dest_dir);
-    let srcs: Vec<PathBuf> = sources.iter().map(|s| expand(s)).collect();
-    let app2 = app.clone();
-
-    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        // Проверить все источники ДО начала работы: лучше отказать целиком,
-        // чем скопировать половину и упасть на втором.
-        for src in &srcs {
-            ensure_not_inside_source(src, &dest)?;
-        }
-        let total: u64 = srcs.iter().map(|p| count_bytes(p)).sum();
-        let mut ctx = CopyCtx {
-            app: Some(&app2),
-            op_id,
-            kind: "copy",
-            total,
-            cancel: &cancel,
-            created: Vec::new(),
-            done: 0,
-        };
-        let mut final_err = None;
-        for src in &srcs {
-            let Some(name) = src.file_name() else {
-                final_err = Some("неверный путь".to_string());
-                break;
-            };
-            let target = match resolve_target(dest.join(name), policy) {
-                Resolved::Use(t) => t,
-                Resolved::Skip => continue,
-            };
-            if let Err(e) = copy_tree(src, &target, &mut ctx) {
-                final_err = Some(e);
-                break;
-            }
-        }
-        // Ошибка или отмена: убрать всё, что успели создать, чтобы не оставлять
-        // пользователю «половину копии», выглядящую как успешный результат.
-        if final_err.is_some() {
-            ctx.rollback();
-        }
-        let _ = app2.emit(
-            "op-progress",
-            OpProgress {
-                op_id,
-                kind: "copy".into(),
-                done: ctx.done,
-                total: ctx.total,
-                current: String::new(),
-                finished: true,
-                error: final_err.clone(),
-            },
-        );
-        match final_err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // Запись в cancels нужна только пока операция жива — иначе HashMap растёт
-    // на каждой операции и течёт всю сессию.
-    state.cancels.lock().unwrap().remove(&op_id);
-    result.map(|_| op_id)
+    start_transfer(&app, &ops, "copy", sources, dest_dir, conflict.unwrap_or_default())
 }
 
 #[tauri::command]
 async fn move_paths(
     app: AppHandle,
-    state: State<'_, AppState>,
+    ops: State<'_, OpsState>,
     sources: Vec<String>,
     dest_dir: String,
     conflict: Option<ConflictPolicy>,
 ) -> Result<u64, String> {
-    let policy = conflict.unwrap_or_default();
-    let op_id = state.next_op.fetch_add(1, Ordering::SeqCst);
-    let cancel = std::sync::Arc::new(AtomicBool::new(false));
-    state.cancels.lock().unwrap().insert(op_id, cancel.clone());
+    start_transfer(&app, &ops, "move", sources, dest_dir, conflict.unwrap_or_default())
+}
 
-    let dest = expand(&dest_dir);
-    let srcs: Vec<PathBuf> = sources.iter().map(|s| expand(s)).collect();
-    let app2 = app.clone();
+/// Список всех операций (для панели операций).
+#[tauri::command]
+async fn list_ops(ops: State<'_, OpsState>) -> Result<Vec<ops::OpInfo>, String> {
+    Ok(ops::list_infos(&ops))
+}
 
-    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        for src in &srcs {
-            ensure_not_inside_source(src, &dest)?;
-        }
-        let total: u64 = srcs.iter().map(|p| count_bytes(p)).sum();
-        let mut ctx = CopyCtx {
-            app: Some(&app2),
-            op_id,
-            kind: "move",
-            total,
-            cancel: &cancel,
-            created: Vec::new(),
-            done: 0,
-        };
-        let mut final_err = None;
-        for src in &srcs {
-            if ctx.cancelled() {
-                final_err = Some("отменено".to_string());
-                break;
-            }
-            let Some(name) = src.file_name() else {
-                final_err = Some("неверный путь".to_string());
-                break;
-            };
-            let target = match resolve_target(dest.join(name), policy) {
-                Resolved::Use(t) => t,
-                Resolved::Skip => continue,
-            };
-            // Быстрый путь: rename в пределах одной ФС. Внешний диск — через копию.
-            if fs::rename(src, &target).is_err() {
-                if let Err(e) = copy_tree(src, &target, &mut ctx) {
-                    final_err = Some(e);
-                    break;
-                }
-                // Источник удаляем только после успешной полной копии.
-                if let Err(e) = fs::remove_dir_all(src).or_else(|_| fs::remove_file(src)) {
-                    final_err = Some(e.to_string());
-                    break;
-                }
-            } else {
-                ctx.done += count_bytes(&target);
-            }
-            ctx.emit(&name.to_string_lossy());
-        }
-        if final_err.is_some() {
-            ctx.rollback();
-        }
-        let _ = app2.emit(
-            "op-progress",
-            OpProgress {
-                op_id,
-                kind: "move".into(),
-                done: ctx.done,
-                total: ctx.total,
-                current: String::new(),
-                finished: true,
-                error: final_err.clone(),
-            },
-        );
-        match final_err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+/// Пауза: воркер замирает на ближайшей записи блока.
+#[tauri::command]
+async fn pause_op(ops: State<'_, OpsState>, op_id: u64) -> Result<(), String> {
+    if ops::signal(&ops, op_id, ops::Signal::Pause) {
+        Ok(())
+    } else {
+        Err("операция не найдена".into())
+    }
+}
 
-    state.cancels.lock().unwrap().remove(&op_id);
-    result.map(|_| op_id)
+/// Возобновление после паузы.
+#[tauri::command]
+async fn resume_op(app: AppHandle, ops: State<'_, OpsState>, op_id: u64) -> Result<(), String> {
+    if ops::signal(&ops, op_id, ops::Signal::Run) {
+        pump(&app, &ops);
+        Ok(())
+    } else {
+        Err("операция не найдена".into())
+    }
+}
+
+/// Отмена: текущая операция откатывает созданное и завершается.
+#[tauri::command]
+async fn cancel_op(app: AppHandle, ops: State<'_, OpsState>, op_id: u64) -> Result<(), String> {
+    if ops::signal(&ops, op_id, ops::Signal::Cancel) {
+        pump(&app, &ops);
+        Ok(())
+    } else {
+        Err("операция не найдена".into())
+    }
+}
+
+/// Убрать завершённую операцию из списка.
+#[tauri::command]
+async fn remove_op(ops: State<'_, OpsState>, op_id: u64) -> Result<(), String> {
+    if ops::remove(&ops, op_id) {
+        Ok(())
+    } else {
+        Err("операция не найдена или ещё не завершена".into())
+    }
 }
 
 /// Удаление в Корзину через Finder (нативно, восстановимо).
@@ -881,14 +825,6 @@ fn write_zip<W: Write + std::io::Seek>(w: W, files: &[(&str, &str)]) -> Result<(
     Ok(())
 }
 
-#[tauri::command]
-async fn cancel_op(state: State<'_, AppState>, op_id: u64) -> Result<(), String> {
-    if let Some(flag) = state.cancels.lock().unwrap().get(&op_id) {
-        flag.store(true, Ordering::Relaxed);
-    }
-    Ok(())
-}
-
 /// Поиск по имени в поддереве (с ограничением глубины и количества).
 #[tauri::command]
 async fn search_tree(root: String, query: String, limit: usize) -> Result<Vec<Entry>, String> {
@@ -947,7 +883,7 @@ async fn reveal_path(path: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::default())
+        .manage(OpsState::new())
         .invoke_handler(tauri::generate_handler![
             list_dir,
             home_dir,
@@ -955,6 +891,10 @@ pub fn run() {
             disk_info,
             copy_paths,
             move_paths,
+            list_ops,
+            pause_op,
+            resume_op,
+            remove_op,
             trash_paths,
             rename_path,
             create_dir,
@@ -1011,7 +951,7 @@ mod tests {
     }
 
     fn ctx<'a>(cancel: &'a AtomicBool, total: u64) -> CopyCtx<'a> {
-        CopyCtx { app: None, op_id: 1, kind: "copy", total, cancel, created: Vec::new(), done: 0 }
+        CopyCtx { app: None, op_id: 1, kind: "copy", total, cancel, created: Vec::new(), done: 0, progress_hook: None }
     }
 
     #[test]
